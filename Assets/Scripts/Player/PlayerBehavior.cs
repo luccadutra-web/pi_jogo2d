@@ -32,6 +32,9 @@ public class PlayerBehavior : MonoBehaviour
     [SerializeField] private int        ghostCount    = 4;
     [SerializeField] private float      ghostInterval = 0.04f;
 
+    private bool isKnockedBack;
+    private float knockbackEndTime;
+
     [Header("Defesa")]
     [Tooltip("Tecla usada para defender. Padrão: E")]
     [SerializeField] private string defendKey = "<Keyboard>/e";
@@ -136,9 +139,22 @@ public class PlayerBehavior : MonoBehaviour
         
     }
 
+    public void ApplyKnockback(Vector2 force, float duration = 0.3f)
+    {
+        rb.linearVelocity = Vector2.zero;
+        rb.AddForce(force, ForceMode2D.Impulse);
+        isKnockedBack = true;
+        knockbackEndTime = Time.time + duration;
+    }
+
+    // No FixedUpdate, adiciona a checagem:
     void FixedUpdate()
     {
-        if (isDashing || isLocked) return;
+    
+        if (isKnockedBack && Time.time >= knockbackEndTime)
+            isKnockedBack = false;
+
+        if (isDashing || isLocked || isKnockedBack) return;
         rb.linearVelocity = new Vector2(horizontalInput * moveSpeed, rb.linearVelocity.y);
     }
 

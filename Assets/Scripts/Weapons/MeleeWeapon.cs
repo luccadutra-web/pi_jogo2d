@@ -110,19 +110,25 @@ public class MeleeWeapon : MonoBehaviour
     }
 
     void DealDamage(int damage, float knockbackForce)
-    {
-        Collider2D[] hits = Physics2D.OverlapCircleAll(
-            attackPoint.position, attackRange, enemyLayer
-        );
+{
+    Collider2D[] hits = Physics2D.OverlapCircleAll(
+        attackPoint.position, attackRange, enemyLayer
+    );
 
-        foreach (Collider2D hit in hits)
+    foreach (Collider2D hit in hits)
+    {
+        // Dano
+        hit.GetComponent<EnemyBehaviorTest>()?.TakeDamage(damage);
+
+        // Knockback direto, sem SendMessage
+        EnemyBehaviorTest enemy = hit.GetComponent<EnemyBehaviorTest>();
+        if (enemy != null)
         {
-            hit.SendMessage("TakeDamage",     damage,
-                            SendMessageOptions.DontRequireReceiver);
-            hit.SendMessage("ApplyKnockback", KnockbackDir(hit) * knockbackForce,
-                            SendMessageOptions.DontRequireReceiver);
+            Vector2 dir = KnockbackDir(hit);
+            enemy.ApplyKnockback(dir * knockbackForce);
         }
     }
+}
 
     private Vector2 KnockbackDir(Collider2D target)
     {

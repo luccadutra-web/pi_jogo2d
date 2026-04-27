@@ -136,18 +136,40 @@ public class EnemyBehaviorTest : MonoBehaviour
     }
 
     private void ExecuteLightAttack()
+{
+    PlayerHealth ph = playerTransform.GetComponent<PlayerHealth>();
+    ph?.TakeDamage(lightDamage);
+
+    
+    Rigidbody2D playerRb = playerTransform.GetComponent<Rigidbody2D>();
+    if (playerRb != null)
     {
-        playerTransform.GetComponent<PlayerHealth>()?.TakeDamage(lightDamage);
-        Debug.Log($"[Enemy] Ataque leve — {lightDamage} dano.");
-        nextAttackTime = Time.time + lightCooldown;
+        Vector2 dir = (playerTransform.position - transform.position).normalized;
+        playerRb.linearVelocity = Vector2.zero;
+        playerRb.AddForce(dir * 6f, ForceMode2D.Impulse);
     }
 
-    private void ExecuteHeavyAttack()
+    Debug.Log($"[Enemy] Ataque leve — {lightDamage} dano.");
+    nextAttackTime = Time.time + lightCooldown;
+}
+
+private void ExecuteHeavyAttack()
+{
+    PlayerHealth ph = playerTransform.GetComponent<PlayerHealth>();
+    ph?.TakeDamage(heavyDamage);
+
+    
+    Rigidbody2D playerRb = playerTransform.GetComponent<Rigidbody2D>();
+    if (playerRb != null)
     {
-        playerTransform.GetComponent<PlayerHealth>()?.TakeDamage(heavyDamage);
-        Debug.Log($"[Enemy] Ataque PESADO — {heavyDamage} dano.");
-        nextAttackTime = Time.time + lightCooldown + heavyExtraCooldown;
+        Vector2 dir = (playerTransform.position - transform.position).normalized;
+        playerRb.linearVelocity = Vector2.zero;
+        playerRb.AddForce(dir * 12f, ForceMode2D.Impulse);
     }
+
+    Debug.Log($"[Enemy] Ataque PESADO — {heavyDamage} dano.");
+    nextAttackTime = Time.time + lightCooldown + heavyExtraCooldown;
+}
 
     
 
@@ -159,16 +181,37 @@ public class EnemyBehaviorTest : MonoBehaviour
         if (currentHealth <= 0) Die();
     }
 
-    public void ApplyKnockback(Vector2 force)
+   public void ApplyKnockback(Vector2 force)
+{
+    if (isDead) return;
+
+    // Clamp na força máxima
+    if (force.magnitude > maxKnockbackForce)
+        force = force.normalized * maxKnockbackForce;
+
+    // Adiciona um arco vertical para parecer mais impactante
+    force.y = Mathf.Clamp(force.y + 4f, 3f, 10f);
+
+    StartCoroutine(KnockbackRoutine(force));
+}
+
+private IEnumerator KnockbackRoutine(Vector2 force)
+{
+    isKnockedBack = true;
+    rb.linearVelocity = Vector2.zero;
+    rb.AddForce(force, ForceMode2D.Impulse);
+
+    // Mantém o knockback por um tempo sem o Update sobrescrever
+    float elapsed = 0f;
+    while (elapsed < knockbackDuration)
     {
-        if (isDead) return;
-        if (force.magnitude > maxKnockbackForce)
-            force = force.normalized * maxKnockbackForce;
-        force.y = Mathf.Clamp(force.y + 2f, 0f, 6f);
-        rb.linearVelocity = Vector2.zero;
-        rb.AddForce(force, ForceMode2D.Impulse);
-        StartCoroutine(KnockbackPause());
+        elapsed += Time.deltaTime;
+        yield return null;
     }
+
+    rb.linearVelocity = Vector2.zero;
+    isKnockedBack = false;
+}
 
     public void Stagger()
     {

@@ -1958,7 +1958,7 @@ Rigidbody2D:
     m_Bits: 0
   m_Interpolate: 0
   m_SleepingMode: 1
-  m_CollisionDetection: 0
+  m_CollisionDetection: 1
   m_Constraints: 4
 --- !u!114 &774811287
 MonoBehaviour:
@@ -3700,7 +3700,7 @@ MonoBehaviour:
   lookAheadDistance: 1.8
   lookAheadSmooth: 0.1
   verticalDeadZone: 0.6
-  offset: {x: 0, y: 5}
+  offset: {x: 1, y: 5}
   useBounds: 0
   minX: 0
   maxX: 0
@@ -4626,11 +4626,11 @@ MonoBehaviour:
   animator: {fileID: 774811292}
   lightDamage: 1
   lightCooldown: 0.2
-  lightKnockback: 5
+  lightKnockback: 7
   lightLockDuration: 0.35
   heavyDamage: 3
   heavyCooldown: 0.8
-  heavyKnockback: 10
+  heavyKnockback: 20
   heavyLockDuration: 0.6
 --- !u!82 &2024685152
 AudioSource:
