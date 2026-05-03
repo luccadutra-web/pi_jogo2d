@@ -190,16 +190,19 @@ public class PlayerHealth : MonoBehaviour
     }
 
     // Knockback removido daqui — agora é aplicado antes da checagem de iFrames em TakeDamage
-    private void ApplyDamage(int damage)
-    {
-        currentHealth = Mathf.Max(currentHealth - damage, 0);
-        OnHealthChanged?.Invoke(currentHealth, maxHealth);
-        OnDamaged?.Invoke();
+        private void ApplyDamage(int damage)
+        {
+            currentHealth = Mathf.Max(currentHealth - damage, 0);
+            OnHealthChanged?.Invoke(currentHealth, maxHealth);
+            OnDamaged?.Invoke();
 
-        if (currentHealth <= 0) { Die(); return; }
+            if (currentHealth <= 0) { Die(); return; }
 
-        StartCoroutine(IFrameRoutine());
-    }
+            // ADICIONA ISSO:
+            GetComponent<CharacterAnimationController>()?.TriggerAnimation("hurt");
+
+            StartCoroutine(IFrameRoutine());
+        }
 
     private void Die()
     {
