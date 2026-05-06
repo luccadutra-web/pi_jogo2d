@@ -16,36 +16,35 @@ public class PlayerBehavior : MonoBehaviour
     [SerializeField] private float moveSpeed = 4.5f;
 
     [Header("Pulo")]
-    [SerializeField] private float jumpForce = 14f;
-    [SerializeField] private float fallMultiplier = 2.8f;
+    [SerializeField] private float jumpForce         = 14f;
+    [SerializeField] private float fallMultiplier    = 2.8f;
     [SerializeField] private float lowJumpMultiplier = 2.0f;
 
     [Header("Ground check")]
     [SerializeField] private Transform groundCheck;
     [SerializeField] private LayerMask groundLayer;
-    [SerializeField] private float groundCheckRadius = 0.15f;
+    [SerializeField] private float     groundCheckRadius = 0.15f;
 
     [Header("Coyote time + jump buffer")]
-    [SerializeField] private float coyoteTime = 0.10f;
+    [SerializeField] private float coyoteTime       = 0.10f;
     [SerializeField] private float jumpBufferWindow = 0.12f;
 
     [Header("Dash")]
-    [SerializeField] private float dashSpeed = 18f;
+    [SerializeField] private float dashSpeed    = 18f;
     [SerializeField] private float dashDuration = 0.18f;
     [SerializeField] private float dashCooldown = 0.9f;
-    [SerializeField] private bool dashInAir = false;
+    [SerializeField] private bool  dashInAir    = false;
 
     [Header("Defesa")]
-    [Tooltip("Tecla usada para defender.")]
     [SerializeField] private string defendKey = "<Keyboard>/e";
 
     private float horizontalInput;
     private float horinzontalIsLocked;
-    private bool _isGrounded;
-    private bool _wasGrounded;
-    private bool _isJumping;
-    private bool _isDashing;
-    private bool _isDashInvincible;
+    private bool  _isGrounded;
+    private bool  _wasGrounded;
+    private bool  _isJumping;
+    private bool  _isDashing;
+    private bool  _isDashInvincible;
     private float coyoteTimer;
     private float jumpBufferTimer;
     private float dashCooldownTimer;
@@ -54,27 +53,24 @@ public class PlayerBehavior : MonoBehaviour
 
     [HideInInspector] public bool isLocked;
 
-   
-    private Coroutine _knockbackCoroutine;
-
     private PlayerHealth _health;
     private CharacterAnimationController animController;
 
-    public bool IsGrounded => _isGrounded;
-    public bool IsJumping => _isJumping;
-    public bool IsDashing => _isDashing;
-    public bool IsDashInvincible => _isDashInvincible;
-    public float FacingDirection => _facingDirection;
-    public float HorizontalSpeed => Mathf.Abs(playerRb.linearVelocity.x);
-    public float VerticalSpeed => playerRb.linearVelocity.y;
+    public bool  IsGrounded       => _isGrounded;
+    public bool  IsJumping        => _isJumping;
+    public bool  IsDashing        => _isDashing;
+    public bool  IsDashInvincible => _isDashInvincible;
+    public float FacingDirection  => _facingDirection;
+    public float HorizontalSpeed  => Mathf.Abs(playerRb.linearVelocity.x);
+    public float VerticalSpeed    => playerRb.linearVelocity.y;
     public float DashCooldownNorm => Mathf.Clamp01(1f - dashCooldownTimer / dashCooldown);
 
     void Awake()
     {
-        playerRb = GetComponent<Rigidbody2D>();
-        _health = GetComponent<PlayerHealth>();
+        playerRb       = GetComponent<Rigidbody2D>();
+        _health        = GetComponent<PlayerHealth>();
         animController = GetComponent<CharacterAnimationController>();
-        originalScale = transform.localScale;
+        originalScale  = transform.localScale;
 
         moveAction = new InputAction("Move", InputActionType.Value);
         moveAction.AddCompositeBinding("1DAxis")
@@ -83,10 +79,10 @@ public class PlayerBehavior : MonoBehaviour
             .With("Positive", "<Keyboard>/d")
             .With("Positive", "<Keyboard>/rightArrow");
 
-        jumpAction = new InputAction("Jump", InputActionType.Button);
+        jumpAction   = new InputAction("Jump", InputActionType.Button);
         jumpAction.AddBinding("<Keyboard>/space");
 
-        dashAction = new InputAction("Dash", InputActionType.Button);
+        dashAction   = new InputAction("Dash", InputActionType.Button);
         dashAction.AddBinding("<Keyboard>/leftShift");
 
         defendAction = new InputAction("Defend", InputActionType.Button);
@@ -126,7 +122,7 @@ public class PlayerBehavior : MonoBehaviour
     private void UpdateGrounded()
     {
         _wasGrounded = _isGrounded;
-        _isGrounded = Physics2D.OverlapCircle(
+        _isGrounded  = Physics2D.OverlapCircle(
             groundCheck.position, groundCheckRadius, groundLayer
         );
 
@@ -141,8 +137,8 @@ public class PlayerBehavior : MonoBehaviour
 
     private void UpdateTimers()
     {
-        if (coyoteTimer > 0f) coyoteTimer -= Time.deltaTime;
-        if (jumpBufferTimer > 0f) jumpBufferTimer -= Time.deltaTime;
+        if (coyoteTimer       > 0f) coyoteTimer       -= Time.deltaTime;
+        if (jumpBufferTimer   > 0f) jumpBufferTimer   -= Time.deltaTime;
         if (dashCooldownTimer > 0f) dashCooldownTimer -= Time.deltaTime;
     }
 
@@ -151,11 +147,8 @@ public class PlayerBehavior : MonoBehaviour
         if (jumpAction.WasPressedThisFrame())
         {
             jumpBufferTimer = jumpBufferWindow;
-
             if (_isGrounded || coyoteTimer > 0f)
-            {
                 animController?.TriggerJump();
-            }
         }
 
         bool canJump = _isGrounded || coyoteTimer > 0f;
@@ -163,24 +156,17 @@ public class PlayerBehavior : MonoBehaviour
         {
             ExecuteJump();
             jumpBufferTimer = 0f;
-            coyoteTimer = 0f;
+            coyoteTimer     = 0f;
         }
     }
 
     private void ExecuteJump()
     {
-        horinzontalIsLocked = horizontalInput;
-
+        horinzontalIsLocked     = horizontalInput;
         playerRb.linearVelocity = new Vector2(playerRb.linearVelocity.x, 0f);
         playerRb.AddForce(Vector2.up * jumpForce, ForceMode2D.Impulse);
-
-        _isJumping = true;
+        _isJumping  = true;
         _isGrounded = false;
-
-        if (_isJumping)
-        {
-            horizontalInput = horinzontalIsLocked;
-        }
     }
 
     private void HandleDash()
@@ -201,9 +187,6 @@ public class PlayerBehavior : MonoBehaviour
             _health.StopDefend();
     }
 
-    private void StartDefend() { }
-    private void StopDefend() { }
-
     void FixedUpdate()
     {
         if (isLocked || _isDashing) return;
@@ -215,10 +198,7 @@ public class PlayerBehavior : MonoBehaviour
     private void ApplyMovement()
     {
         float input = _isGrounded ? horizontalInput : horinzontalIsLocked;
-
-        playerRb.linearVelocity =
-            new Vector2(input * moveSpeed, playerRb.linearVelocity.y);
-
+        playerRb.linearVelocity = new Vector2(input * moveSpeed, playerRb.linearVelocity.y);
         animController?.SetSpeed(Mathf.Abs(playerRb.linearVelocity.x));
     }
 
@@ -238,7 +218,7 @@ public class PlayerBehavior : MonoBehaviour
 
     private IEnumerator DashRoutine()
     {
-        _isDashing = true;
+        _isDashing        = true;
         _isDashInvincible = true;
         dashCooldownTimer = dashCooldown;
 
@@ -246,70 +226,30 @@ public class PlayerBehavior : MonoBehaviour
             ? Mathf.Sign(horizontalInput)
             : _facingDirection;
 
-        float originalGravity = playerRb.gravityScale;
-        playerRb.gravityScale = 0f;
+        float originalGravity   = playerRb.gravityScale;
+        playerRb.gravityScale   = 0f;
         playerRb.linearVelocity = new Vector2(dir * dashSpeed, 0f);
 
         yield return new WaitForSeconds(dashDuration);
 
-        playerRb.gravityScale = originalGravity;
+        playerRb.gravityScale   = originalGravity;
         playerRb.linearVelocity = new Vector2(playerRb.linearVelocity.x * 0.25f, 0f);
 
-        _isDashing = false;
+        _isDashing        = false;
         _isDashInvincible = false;
-    }
-
-    public void ApplyKnockback(Vector2 force, float duration = 0.25f)
-    {
-        
-        if (_knockbackCoroutine != null)
-            StopCoroutine(_knockbackCoroutine);
-
-        _knockbackCoroutine = StartCoroutine(KnockbackRoutine(force, duration));
-    }
-
-   
-    public void CancelKnockback()
-    {
-        if (_knockbackCoroutine != null)
-        {
-            StopCoroutine(_knockbackCoroutine);
-            _knockbackCoroutine = null;
-        }
-        
-    }
-
-    private IEnumerator KnockbackRoutine(Vector2 force, float duration)
-    {
-        isLocked = true;
-        playerRb.linearVelocity = Vector2.zero;
-
-       
-        playerRb.AddForce(force / playerRb.mass, ForceMode2D.Impulse);
-
-        yield return new WaitForSeconds(duration);
-
-        
-        if (_health == null || !_health.IsDead)
-        {
-            isLocked = false;
-        }
-            
-
-        _knockbackCoroutine = null;
     }
 
     private void UpdateFacing()
     {
         if (horizontalInput > 0.01f)
         {
-            _facingDirection = 1f;
+            _facingDirection     = 1f;
             transform.localScale = new Vector3(
-                Mathf.Abs(originalScale.x), originalScale.y, originalScale.z);
+                 Mathf.Abs(originalScale.x), originalScale.y, originalScale.z);
         }
         else if (horizontalInput < -0.01f)
         {
-            _facingDirection = -1f;
+            _facingDirection     = -1f;
             transform.localScale = new Vector3(
                 -Mathf.Abs(originalScale.x), originalScale.y, originalScale.z);
         }

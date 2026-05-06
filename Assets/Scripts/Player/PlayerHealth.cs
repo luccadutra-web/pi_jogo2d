@@ -16,7 +16,6 @@ public class PlayerHealth : MonoBehaviour
     [Header("Parry")]
     [SerializeField] private float parryWindowDuration  = 0.16f;
     [SerializeField] private float parryCooldown        = 1.2f;
-    [SerializeField] private float parryKnockbackForce  = 14f;
     [SerializeField] private float parryHitStopDuration = 0.22f;
 
     [Header("Defesa")]
@@ -79,53 +78,48 @@ public class PlayerHealth : MonoBehaviour
 
         if (parryWindowOpen)
         {
-            Debug.Log("Janela do parry aberta");
             parryWindowTimer -= Time.deltaTime;
-
             if (parryWindowTimer <= 0f)
-            {
                 parryWindowOpen = false;
-            }
-                
         }
     }
 
-    public void TakeDamage(int damage, Vector2 knockbackForce = default)
+    public void TakeDamage(int damage)
     {
         if (isDead) return;
 
         if (parryWindowOpen && parryCooldownTimer <= 0f)
         {
             ExecuteParry();
-            Debug.Log("Parry feito");
+            Debug.Log("[PlayerHealth] Parry!");
             return;
         }
 
         if (isDefending)
         {
-            ExecuteBlock(damage, knockbackForce);
-            Debug.Log("Defesa feita");
+            ExecuteBlock(damage);
+            Debug.Log("[PlayerHealth] Bloqueou!");
             return;
         }
 
-        if (behavior.IsDashInvincible) return;
-
-        if (knockbackForce != Vector2.zero)
+        if (behavior.IsDashInvincible)
         {
-            behavior.ApplyKnockback(knockbackForce);
-
+            Debug.Log("[PlayerHealth] Dash invencível — ignorado.");
+            return;
         }
-            
-        if (isInvincible) return;
 
-        Debug.Log("Vida= " + currentHealth + "/" + maxHealth);
+        if (isInvincible)
+        {
+            Debug.Log("[PlayerHealth] iFrame — ignorado.");
+            return;
+        }
+
         ApplyDamage(damage);
     }
 
     public void StartDefend()
     {
         if (isDead || isDefending) return;
-
         isDefending     = true;
         defendCoroutine = StartCoroutine(DefendTimeout());
 
@@ -140,7 +134,6 @@ public class PlayerHealth : MonoBehaviour
     {
         if (!isDefending) return;
         isDefending = false;
-
         if (defendCoroutine != null)
         {
             StopCoroutine(defendCoroutine);
@@ -153,29 +146,23 @@ public class PlayerHealth : MonoBehaviour
         if (!isDefending) return;
         StopDefend();
         OnBlockBroken?.Invoke();
+        Debug.Log("[PlayerHealth] Defesa quebrada.");
     }
 
-    private void ExecuteBlock(int damage, Vector2 knockbackForce)
+    private void ExecuteBlock(int damage)
     {
         float staminaCost   = damage * blockStaminaRatio * 10f;
         int   reducedDamage = Mathf.RoundToInt(damage * blockDamageRatio);
 
-        bool staminaOk = stamina != null && stamina.Spend(staminaCost);
+        stamina?.Spend(staminaCost);
 
         if (reducedDamage > 0)
         {
             currentHealth = Mathf.Max(currentHealth - reducedDamage, 0);
             OnHealthChanged?.Invoke(currentHealth, maxHealth);
-
-            if (currentHealth <= 0)
-            {
-                Die();
-                return;
-            }
+            Debug.Log($"[PlayerHealth] Bloqueou | dano reduzido={reducedDamage} | vida={currentHealth}/{maxHealth}");
+            if (currentHealth <= 0) { Die(); return; }
         }
-
-        if (knockbackForce != Vector2.zero)
-            behavior.ApplyKnockback(knockbackForce * 0.4f);
 
         OnBlocked?.Invoke();
     }
@@ -192,8 +179,6 @@ public class PlayerHealth : MonoBehaviour
         foreach (Collider2D col in nearby)
         {
             if (col.gameObject == gameObject) continue;
-            Vector2 dir = (col.transform.position - transform.position).normalized;
-            col.GetComponent<IDamageable>()?.ReceiveKnockback(dir * parryKnockbackForce);
             col.GetComponent<IStaggerable>()?.Stagger();
         }
     }
@@ -204,11 +189,9 @@ public class PlayerHealth : MonoBehaviour
         OnHealthChanged?.Invoke(currentHealth, maxHealth);
         OnDamaged?.Invoke();
 
-        if (currentHealth <= 0)
-        {
-            Die();
-            return;
-        }
+        Debug.Log($"[PlayerHealth] Dano={damage} | Vida={currentHealth}/{maxHealth}");
+
+        if (currentHealth <= 0) { Die(); return; }
 
         GetComponent<CharacterAnimationController>()?.TriggerAnimation("hurt");
         StartCoroutine(IFrameRoutine());
@@ -216,16 +199,10 @@ public class PlayerHealth : MonoBehaviour
 
     private void Die()
     {
-        
         if (isDead) return;
-
         isDead            = true;
         behavior.isLocked = true;
-
-        
-        behavior.CancelKnockback();
-
-        Debug.Log("Player morreu");
+        Debug.Log("[PlayerHealth] Player morreu.");
         OnDeath?.Invoke();
     }
 
@@ -246,7 +223,6 @@ public class PlayerHealth : MonoBehaviour
 public interface IDamageable
 {
     void TakeDamage(int damage);
-    void ReceiveKnockback(Vector2 force);
 }
 
 public interface IStaggerable

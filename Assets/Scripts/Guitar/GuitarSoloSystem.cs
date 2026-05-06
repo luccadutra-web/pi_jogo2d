@@ -276,7 +276,7 @@ public class GuitarSoloSystem : MonoBehaviour
             Vector2 force = new Vector2(dir.x * blastKnockback, 3f);
 
             damageable.TakeDamage(blastDamage);
-            damageable.ReceiveKnockback(force);
+            
 
             // Stagger em todos os atingidos
             hit.GetComponent<IStaggerable>()?.Stagger();

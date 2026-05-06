@@ -22,7 +22,6 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
     [Header("Ataque leve")]
     [SerializeField] private float lightAttackRange = 1.4f;
     [SerializeField] private int   lightDamage      = 1;
-    [SerializeField] private float lightKnockback   = 5f;
     [SerializeField] private float lightStartup     = 0.20f;
     [SerializeField] private float lightActiveTime  = 0.10f;
     [SerializeField] private float lightRecovery    = 0.30f;
@@ -31,20 +30,14 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
     [Header("Ataque pesado")]
     [SerializeField] private float heavyAttackRange  = 1.8f;
     [SerializeField] private int   heavyDamage       = 3;
-    [SerializeField] private float heavyKnockback    = 11f;
     [SerializeField] private float heavyStartup      = 0.40f;
     [SerializeField] private float heavyActiveTime   = 0.15f;
     [SerializeField] private float heavyRecovery     = 0.55f;
     [SerializeField] private float heavyCooldown     = 3.0f;
     [SerializeField] private float heavyTriggerRange = 1.6f;
 
-    [Header("Knockback recebido")]
-    [SerializeField] private float knockbackDuration = 0.20f;
-    [SerializeField] private float maxKnockbackForce = 15f;
-
-    
-    [SerializeField] private float horizontalHitLift = 2f;
-    [SerializeField] private float horizontalThreshold = 0.1f;
+    [Header("Stagger (parry)")]
+    [SerializeField] private float staggerDuration = 0.5f;
 
     [Header("Ground Check")]
     [SerializeField] private Transform groundCheck;
@@ -60,9 +53,8 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
     private State state = State.Patrol;
 
     private int   currentHealth;
-    private bool  isKnockedBack;
+    private bool  isStaggered;
     private bool  _isPerformingAttack;
-
     private float lightCooldownTimer;
     private float heavyCooldownTimer;
 
@@ -72,21 +64,17 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
     private Rigidbody2D rb;
     private CharacterAnimationController animController;
 
-    
     private bool  _pendingAttack;
     private float _pendingRange;
     private int   _pendingDamage;
-    private float _pendingKnock;
 
     private void Log(string msg) { if (debugAttack) Debug.Log($"[ENEMY {name}] {msg}"); }
 
-    
-
     void Awake()
     {
-        rb            = GetComponent<Rigidbody2D>();
+        rb             = GetComponent<Rigidbody2D>();
         animController = GetComponent<CharacterAnimationController>();
-        currentHealth = maxHealth;
+        currentHealth  = maxHealth;
         rb.freezeRotation = true;
     }
 
@@ -101,10 +89,9 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
             Debug.LogError("[EnemyBehavior] Player não encontrado — verifique a tag 'Player'.");
     }
 
-
     void Update()
     {
-        if (state == State.Dead || state == State.Hurt || isKnockedBack) return;
+        if (state == State.Dead || state == State.Hurt || isStaggered) return;
 
         TickCooldowns();
         UpdateGroundedAnimation();
@@ -122,7 +109,6 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
         if (lightCooldownTimer > 0f) lightCooldownTimer -= Time.deltaTime;
         if (heavyCooldownTimer > 0f) heavyCooldownTimer -= Time.deltaTime;
     }
-
 
     private void DoPatrol()
     {
@@ -150,12 +136,7 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
 
         float dist = Vector2.Distance(transform.position, playerTransform.position);
 
-        if (dist > detectionRange * 1.3f)
-        {
-            Log("Perdeu player → PATROL");
-            state = State.Patrol;
-            return;
-        }
+        if (dist > detectionRange * 1.3f) { Log("Perdeu player → PATROL"); state = State.Patrol; return; }
 
         if (dist <= lightAttackRange)
         {
@@ -175,18 +156,12 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
     private void DoAttack()
     {
         if (_isPerformingAttack) return;
-
         if (playerTransform == null) { state = State.Chase; return; }
 
         float dist = Vector2.Distance(transform.position, playerTransform.position);
         Log($"DoAttack | dist={dist:F2}");
 
-        if (dist > lightAttackRange * 2f)
-        {
-            Log("Saiu do range → CHASE");
-            state = State.Chase;
-            return;
-        }
+        if (dist > lightAttackRange * 2f) { Log("Saiu do range → CHASE"); state = State.Chase; return; }
 
         rb.linearVelocity = new Vector2(0f, rb.linearVelocity.y);
         animController?.SetSpeed(0f);
@@ -203,7 +178,6 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
         }
     }
 
-
     private IEnumerator AttackRoutine(bool isHeavy)
     {
         _isPerformingAttack = true;
@@ -214,87 +188,62 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
         float cooldown   = isHeavy ? heavyCooldown   : lightCooldown;
         float range      = isHeavy ? heavyAttackRange : lightAttackRange;
         int   damage     = isHeavy ? heavyDamage     : lightDamage;
-        float knock      = isHeavy ? heavyKnockback  : lightKnockback;
 
         _pendingAttack = true;
         _pendingRange  = range;
         _pendingDamage = damage;
-        _pendingKnock  = knock;
 
         if (isHeavy) heavyCooldownTimer = cooldown;
         else         lightCooldownTimer = cooldown;
 
         animController?.TriggerAnimation(isHeavy ? "HeavyAttack" : "LightAttack");
-        Log($"AttackRoutine START → {(isHeavy ? "HEAVY" : "LIGHT")} | startup={startup}s");
+        Log($"AttackRoutine START → {(isHeavy ? "HEAVY" : "LIGHT")}");
 
         yield return new WaitForSeconds(startup);
 
         if (_pendingAttack)
         {
-            Log("Active — aplicando hit direto.");
-            ApplyHit(range, damage, knock);
+            Log("Active — aplicando hit.");
+            ApplyHit(range, damage);
             _pendingAttack = false;
         }
 
-        yield return new WaitForSeconds(activeTime);
-
-        yield return new WaitForSeconds(recovery);
+        yield return new WaitForSeconds(activeTime + recovery);
 
         Log("AttackRoutine END");
         _isPerformingAttack = false;
 
         if (state != State.Dead)
+        {
             state = State.Chase;
+        }
+            
     }
 
-    
-    private void ApplyHit(float range, int damage, float knock)
+    private void ApplyHit(float range, int damage)
     {
         Vector2 origin = GetAttackPointPosition();
-
-        Log($"ApplyHit | origin={origin} | range={range} | playerLayer={playerLayer.value}");
+        Log($"ApplyHit | origin={origin} | range={range}");
 
         Collider2D hit = Physics2D.OverlapCircle(origin, range, playerLayer);
-
-        if (hit == null)
-        {
-            Log("ApplyHit — nenhum collider na playerLayer.");
-            return;
-        }
+        if (hit == null) { Log("ApplyHit — nenhum collider."); return; }
 
         PlayerHealth ph = hit.GetComponent<PlayerHealth>()
                        ?? hit.GetComponentInParent<PlayerHealth>();
 
-        if (ph == null)
-        {
-            Log($"ApplyHit — collider '{hit.name}' encontrado mas sem PlayerHealth.");
-            return;
-        }
+        if (ph == null) { Log($"ApplyHit — sem PlayerHealth em '{hit.name}'."); return; }
 
-        Vector2 dir   = ((Vector2)ph.transform.position - origin).normalized;
-        Vector2 force = dir * knock;
-
-        Log($"HIT CONFIRMADO | dmg={damage} | alvo={ph.name}");
-        ph.TakeDamage(damage, force);
+        Log($"HIT CONFIRMADO | dmg={damage}");
+        ph.TakeDamage(damage);
     }
-
-    
 
     public void DealAttackHit()
     {
-        Log($"AnimationEvent DealAttackHit | pending={_pendingAttack}");
-
-        if (!_pendingAttack)
-        {
-            Log("AnimationEvent ignorado — hit já foi aplicado ou não há ataque pendente.");
-            return;
-        }
-
+        Log($"AnimationEvent | pending={_pendingAttack}");
+        if (!_pendingAttack) { Log("Ignorado."); return; }
         _pendingAttack = false;
-        ApplyHit(_pendingRange, _pendingDamage, _pendingKnock);
+        ApplyHit(_pendingRange, _pendingDamage);
     }
-
-    
 
     public void TakeDamage(int damage)
     {
@@ -308,32 +257,11 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
 
         animController?.TriggerAnimation("Hit");
         GetComponent<HitFlash>()?.Flash();
-        Debug.Log($"[ENEMY {name}] TakeDamage | dmg={damage} | hp={currentHealth}/{maxHealth}");
 
         if (currentHealth <= 0) { Die(); return; }
 
         StartCoroutine(HurtRoutine());
     }
-
-    public void ReceiveKnockback(Vector2 force)
-    {
-        if (state == State.Dead) return;
-
-        if (force.magnitude > maxKnockbackForce)
-        {
-            force = force.normalized * maxKnockbackForce;
-        }
-            
-        if (Mathf.Abs(force.y) < horizontalThreshold)
-        {
-            force.y = horizontalHitLift;
-        }
-           
-
-        StartCoroutine(KnockbackRoutine(force));
-    }
-
-   
 
     public void Stagger()
     {
@@ -346,7 +274,6 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
         StartCoroutine(StaggerRoutine());
     }
 
-   
     private IEnumerator HurtRoutine()
     {
         state = State.Hurt;
@@ -354,27 +281,15 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
         if (state != State.Dead) state = State.Chase;
     }
 
-    private IEnumerator KnockbackRoutine(Vector2 force)
-    {
-        isKnockedBack     = true;
-        rb.linearVelocity = Vector2.zero;
-        rb.AddForce(force, ForceMode2D.Impulse);
-
-        yield return new WaitForSeconds(knockbackDuration);
-
-        rb.linearVelocity = Vector2.zero;
-        isKnockedBack     = false;
-    }
-
     private IEnumerator StaggerRoutine()
     {
-        state         = State.Hurt;
-        isKnockedBack = true;
+        state       = State.Hurt;
+        isStaggered = true;
         animController?.TriggerAnimation("Stagger");
 
-        yield return new WaitForSeconds(0.5f);
+        yield return new WaitForSeconds(staggerDuration);
 
-        isKnockedBack = false;
+        isStaggered = false;
         if (state != State.Dead) state = State.Chase;
     }
 
@@ -397,13 +312,9 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
         Destroy(gameObject);
     }
 
-   
-
     private Vector2 GetAttackPointPosition()
     {
-        if (attackPoint != null)
-            return attackPoint.position;
-
+        if (attackPoint != null) return attackPoint.position;
         float facing = transform.localScale.x >= 0 ? 1f : -1f;
         return (Vector2)transform.position + Vector2.right * facing * attackPointOffset;
     }
@@ -424,15 +335,12 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
         );
     }
 
-
     void OnDrawGizmosSelected()
     {
         Gizmos.color = Color.yellow;
         Gizmos.DrawWireSphere(transform.position, detectionRange);
-
         Gizmos.color = Color.red;
         Gizmos.DrawWireSphere(transform.position, lightAttackRange);
-
         Gizmos.color = new Color(1f, 0.4f, 0f);
         Gizmos.DrawWireSphere(transform.position, heavyAttackRange);
 
