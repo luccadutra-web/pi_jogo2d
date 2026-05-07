@@ -20,19 +20,16 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
     [SerializeField] private bool debugAttack = true;
 
     [Header("Ataque leve")]
-    // FIX ALCANCE — lightAttackRange era 1.4f, mas GetAttackPointPosition()
-    // adicionava attackPointOffset (0.8f) ao transform antes de usar esse raio,
-    // totalizando ~2.2f de alcance real. O player tem lightAttackRange=1.5f a
-    // partir do attackPoint que já está deslocado — resultando em alcance real menor.
-    // Solução: attackPointOffset zerado por padrão (use um Transform filho em vez
-    // de offset manual) e ranges reduzidos para refletir a distância real da hitbox.
-    // Se você usar um Transform filho como attackPoint, o offset não importa.
     [SerializeField] private float lightAttackRange = 1.5f;
     [SerializeField] private int   lightDamage      = 1;
     [SerializeField] private float lightStartup     = 0.20f;
     [SerializeField] private float lightActiveTime  = 0.10f;
     [SerializeField] private float lightRecovery    = 0.30f;
     [SerializeField] private float lightCooldown    = 1.2f;
+
+    // Dano de postura causado pelo light attack ao player (se o player tiver EnemyPoise no futuro)
+    // e recebido pelo inimigo quando é acertado. Configurável por tipo de inimigo.
+    [SerializeField] private float lightPoiseDamage = 20f;
 
     [Header("Ataque pesado")]
     [SerializeField] private float heavyAttackRange  = 1.8f;
@@ -42,13 +39,18 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
     [SerializeField] private float heavyRecovery     = 0.55f;
     [SerializeField] private float heavyCooldown     = 3.0f;
     [SerializeField] private float heavyTriggerRange = 1.6f;
+    [SerializeField] private float heavyPoiseDamage  = 45f;
 
     [Header("Telegraph do heavy (VFX/animação de carregamento)")]
     [Tooltip("VFX ou GameObject ativado durante o startup do heavy para sinalizar o ataque")]
     [SerializeField] private GameObject heavyTelegraphVFX;
 
-    [Header("Stagger (parry)")]
+    [Header("Stagger (parry / poise quebrada)")]
     [SerializeField] private float staggerDuration = 0.5f;
+
+    // Duração do stagger quando a poise quebra — geralmente mais longo que o stagger de parry,
+    // pois é a abertura principal para o finisher do jogador.
+    [SerializeField] private float poiseBreakStaggerDuration = 1.8f;
 
     [Header("Ground Check")]
     [SerializeField] private Transform groundCheck;
@@ -57,13 +59,21 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
 
     [Header("Attack Hitbox")]
     [SerializeField] private Transform attackPoint;
-    // FIX ALCANCE — attackPointOffset era 0.8f. Quando attackPoint=null, a hitbox
-    // era criada a partir do transform.position + 0.8f de offset E depois expandida
-    // pelo raio do ataque, dando alcance real = offset + range. O player não tem
-    // esse offset duplo. Reduzido para 0.5f como fallback; o ideal é atribuir um
-    // Transform filho posicionado corretamente no Inspector (igual ao player).
     [SerializeField] private float     attackPointOffset = 0.5f;
     [SerializeField] private LayerMask playerLayer;
+
+    // ─── Nomes de trigger/bool no Animator Controller ──────────────────────────
+    // Constantes para evitar typos. Quando as animações de GuardCrush e Counter
+    // estiverem prontas, crie os parâmetros correspondentes no Animator e remova
+    // os comentários de HasParameter nos métodos de animação abaixo.
+    private const string TriggerHit        = "Hit";
+    private const string TriggerStagger    = "Stagger";
+    private const string TriggerDie        = "Die";
+    private const string TriggerLightAtk   = "LightAttack";
+    private const string TriggerHeavyAtk   = "HeavyAttack";
+    // FUTURO: adicione esses triggers no Animator quando as animações estiverem prontas.
+    // private const string TriggerGuardCrush = "GuardCrush";  // inimigo sofre guard crush do player
+    // private const string TriggerPoiseBreak = "PoiseBreak";  // inimigo em stagger por poise
 
     private enum State { Patrol, Chase, Attack, Hurt, Dead }
     private State state = State.Patrol;
@@ -79,10 +89,12 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
     private Transform playerTransform;
     private Rigidbody2D rb;
     private CharacterAnimationController animController;
+    private EnemyPoise poise;
 
     private bool  _pendingAttack;
     private float _pendingRange;
     private int   _pendingDamage;
+    private bool  _pendingIsHeavy;
 
     private void Log(string msg) { if (debugAttack) Debug.Log($"[ENEMY {name}] {msg}"); }
 
@@ -90,6 +102,7 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
     {
         rb             = GetComponent<Rigidbody2D>();
         animController = GetComponent<CharacterAnimationController>();
+        poise          = GetComponent<EnemyPoise>();
         currentHealth  = maxHealth;
         rb.freezeRotation = true;
     }
@@ -103,6 +116,19 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
             playerTransform = playerObj.transform;
         else
             Debug.LogError("[EnemyBehavior] Player não encontrado — verifique a tag 'Player'.");
+
+        // Conecta poise ao stagger do inimigo.
+        // Quando o EnemyPoise detecta a postura zerada, dispara OnPoiseBreak,
+        // que aciona um stagger mais longo (poiseBreakStaggerDuration) em vez
+        // do stagger curto de parry.
+        if (poise != null)
+            poise.OnPoiseBreak += OnPoiseBreak;
+    }
+
+    void OnDestroy()
+    {
+        if (poise != null)
+            poise.OnPoiseBreak -= OnPoiseBreak;
     }
 
     void Update()
@@ -204,33 +230,51 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
         float range      = isHeavy ? heavyAttackRange : lightAttackRange;
         int   damage     = isHeavy ? heavyDamage     : lightDamage;
 
-        _pendingAttack = true;
-        _pendingRange  = range;
-        _pendingDamage = damage;
+        _pendingAttack  = true;
+        _pendingRange   = range;
+        _pendingDamage  = damage;
+        _pendingIsHeavy = isHeavy;
 
         if (isHeavy) heavyCooldownTimer = cooldown;
         else         lightCooldownTimer = cooldown;
 
-        animController?.TriggerAnimation(isHeavy ? "HeavyAttack" : "LightAttack");
+        animController?.TriggerAnimation(isHeavy ? TriggerHeavyAtk : TriggerLightAtk);
 
         if (isHeavy && heavyTelegraphVFX != null)
             heavyTelegraphVFX.SetActive(true);
 
         Log($"AttackRoutine START → {(isHeavy ? "HEAVY" : "LIGHT")} | startup={startup}s");
 
-        yield return new WaitForSeconds(startup);
+        // Startup — verifica a cada frame se o ataque foi interrompido (parry/stagger/death).
+        float elapsed = 0f;
+        while (elapsed < startup)
+        {
+            if (!_isPerformingAttack || state == State.Dead) yield break;
+            elapsed += Time.deltaTime;
+            yield return null;
+        }
 
         if (isHeavy && heavyTelegraphVFX != null)
             heavyTelegraphVFX.SetActive(false);
 
+        // Sai imediatamente se o ataque foi cancelado durante o startup.
+        if (!_isPerformingAttack || state == State.Dead) yield break;
+
         if (_pendingAttack)
         {
             Log("Active — aplicando hit.");
-            ApplyHit(range, damage);
+            ApplyHit(range, damage, isHeavy);
             _pendingAttack = false;
         }
 
-        yield return new WaitForSeconds(activeTime + recovery);
+        // Recovery — também interruptível por stagger/parry.
+        elapsed = 0f;
+        while (elapsed < activeTime + recovery)
+        {
+            if (!_isPerformingAttack || state == State.Dead) yield break;
+            elapsed += Time.deltaTime;
+            yield return null;
+        }
 
         Log("AttackRoutine END");
         _isPerformingAttack = false;
@@ -239,14 +283,8 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
             state = State.Chase;
     }
 
-    private void ApplyHit(float range, int damage)
+    private void ApplyHit(float range, int damage, bool isHeavy)
     {
-        // FIX ALCANCE — GetAttackPointPosition retorna a origem da hitbox.
-        // O OverlapCircle expande o raio a partir desse ponto. Se attackPoint
-        // for null, o fallback usa attackPointOffset para calcular a posição —
-        // mas isso não muda o raio. O range aqui já deve ser o raio da hitbox,
-        // não o alcance total. Certifique-se de que attackPoint está configurado
-        // no Inspector para ter um alcance consistente com o player.
         Vector2 origin = GetAttackPointPosition();
 
         Collider2D hit = Physics2D.OverlapCircle(origin, range, playerLayer);
@@ -254,22 +292,30 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
 
         PlayerHealth ph = hit.GetComponent<PlayerHealth>()
                        ?? hit.GetComponentInParent<PlayerHealth>();
-
         if (ph == null) return;
 
         ph.RegisterAttacker(transform);
-        ph.TakeDamage(damage, transform.position);
 
-        Log($"HIT CONFIRMADO | dmg={damage}");
+        // Ataques pesados do inimigo chamam TakeDamageHeavy para habilitar
+        // Guard Crush no player quando a stamina estiver baixa.
+        if (isHeavy)
+            ph.TakeDamageHeavy(damage, transform.position);
+        else
+            ph.TakeDamage(damage, transform.position);
+
+        Log($"HIT CONFIRMADO | dmg={damage} | isHeavy={isHeavy}");
     }
 
+    // Chamado por Animation Event no clip de ataque do inimigo (relay do CharacterAnimationController).
     public void DealAttackHit()
     {
         Log($"AnimationEvent | pending={_pendingAttack}");
         if (!_pendingAttack) return;
         _pendingAttack = false;
-        ApplyHit(_pendingRange, _pendingDamage);
+        ApplyHit(_pendingRange, _pendingDamage, _pendingIsHeavy);
     }
+
+    // ─── IDamageable ───────────────────────────────────────────────────────────
 
     public void TakeDamage(int damage, Vector2 sourcePosition)
     {
@@ -281,24 +327,26 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
         currentHealth -= damage;
         Log($"TakeDamage | dmg={damage} | hp={currentHealth}/{maxHealth}");
 
-        // FIX HURT DELAY — inimigo usa TriggerAnimation (com ResetTrigger) porque
-        // estados reativos do inimigo não sofrem o mesmo problema: o inimigo não
-        // tem spam de input e o Animator raramente está em transição no momento
-        // do hit. Mantido como estava; se ocorrer o mesmo delay, troque por
-        // SetTriggerDirect("Hit") aqui também.
-        animController?.TriggerAnimation("Hit");
+        animController?.TriggerAnimation(TriggerHit);
         GetComponent<HitFlash>()?.Flash();
+
+        // Repassa o dano de postura para o componente EnemyPoise (se existir).
+        // O dano de poise é determinado pelo tipo de ataque que causou o dano —
+        // por padrão usa lightPoiseDamage. MeleeWeapon chama ReceivePoiseHit
+        // diretamente (veja MeleeWeapon.ApplyHit) com o valor correto por tipo.
+        // Esta chamada aqui é o fallback para danos vindos de outras fontes.
+        poise?.ReceivePoiseHit(lightPoiseDamage);
 
         if (currentHealth <= 0) { Die(); return; }
 
         StartCoroutine(HurtRoutine());
     }
 
-    public void TakeDamage(int damage)
-    {
-        TakeDamage(damage, default);
-    }
+    public void TakeDamage(int damage) => TakeDamage(damage, default);
 
+    // ─── IStaggerable ──────────────────────────────────────────────────────────
+
+    // Stagger curto — disparado por parry do player (PlayerHealth.ExecuteParry).
     public void Stagger()
     {
         if (state == State.Dead) return;
@@ -310,8 +358,34 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
             heavyTelegraphVFX.SetActive(false);
 
         StopAllCoroutines();
-        StartCoroutine(StaggerRoutine());
+
+        // Força saída imediata do estado de ataque no Animator, ignorando exit time.
+        // CrossFade com transitionDuration=0 garante que o Stagger começa no mesmo frame,
+        // mesmo que o clip de ataque ainda esteja rodando com exit time habilitado.
+        animController?.ForceState(TriggerStagger);
+
+        StartCoroutine(StaggerRoutine(staggerDuration));
     }
+
+    // Stagger longo — disparado quando a postura (EnemyPoise) é zerada.
+    private void OnPoiseBreak()
+    {
+        if (state == State.Dead) return;
+
+        _pendingAttack      = false;
+        _isPerformingAttack = false;
+
+        if (heavyTelegraphVFX != null)
+            heavyTelegraphVFX.SetActive(false);
+
+        StopAllCoroutines();
+        animController?.ForceState(TriggerStagger);
+
+        Log($"POISE QUEBRADA — stagger longo ({poiseBreakStaggerDuration}s)");
+        StartCoroutine(StaggerRoutine(poiseBreakStaggerDuration));
+    }
+
+    // ─── Rotinas privadas ──────────────────────────────────────────────────────
 
     private IEnumerator HurtRoutine()
     {
@@ -320,13 +394,16 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
         if (state != State.Dead) state = State.Chase;
     }
 
-    private IEnumerator StaggerRoutine()
+    private IEnumerator StaggerRoutine(float duration)
     {
         state       = State.Hurt;
         isStaggered = true;
-        animController?.TriggerAnimation("Stagger");
 
-        yield return new WaitForSeconds(staggerDuration);
+        // ForceState já foi chamado antes desta coroutine (em Stagger/OnPoiseBreak),
+        // garantindo transição imediata sem depender de exit time no Animator.
+        // Não dispara TriggerAnimation aqui para não reiniciar a animação.
+
+        yield return new WaitForSeconds(duration);
 
         isStaggered = false;
         if (state != State.Dead) state = State.Chase;
@@ -343,7 +420,7 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
             heavyTelegraphVFX.SetActive(false);
 
         animController?.SetSpeed(0f);
-        animController?.TriggerAnimation("Die");
+        animController?.TriggerAnimation(TriggerDie);
         SpecialSystem.Instance?.AddKillEnergy();
 
         StartCoroutine(DeathRoutine());
@@ -359,11 +436,6 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
     {
         if (attackPoint != null) return attackPoint.position;
 
-        // Fallback sem Transform filho: usa offset a partir do pivot do sprite.
-        // IMPORTANTE: este fallback adiciona offset À posição do transform,
-        // e então ApplyHit expande o OverlapCircle pelo range a partir daqui.
-        // Alcance real = attackPointOffset + range. Para igualar ao player,
-        // configure um Transform filho como attackPoint no Inspector.
         float facing = transform.localScale.x >= 0 ? 1f : -1f;
         return (Vector2)transform.position + Vector2.right * facing * attackPointOffset;
     }

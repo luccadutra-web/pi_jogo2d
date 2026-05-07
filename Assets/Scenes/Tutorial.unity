@@ -196,6 +196,55 @@ CanvasRenderer:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 40799670}
   m_CullTransparentMesh: 1
+--- !u!1 &163985772
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 163985773}
+  - component: {fileID: 163985774}
+  m_Layer: 7
+  m_Name: EnemyPoise
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &163985773
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 163985772}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 856340125}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &163985774
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 163985772}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: fd0d896a1c73edc439fc1051c7269b5a, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::EnemyPoise
+  maxPoise: 60
+  poiseRegenDelay: 2.5
+  poiseRegenRate: 40
+  staggerDuration: 1.8
+  debugPoise: 1
 --- !u!1 &215697869
 GameObject:
   m_ObjectHideFlags: 0
@@ -495,6 +544,7 @@ Transform:
   m_ConstrainProportionsScale: 0
   m_Children:
   - {fileID: 519420032}
+  - {fileID: 1689351120}
   m_Father: {fileID: 1759602244}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!114 &433166026
@@ -726,6 +776,12 @@ MonoBehaviour:
   finisherStartup: 0.28
   finisherActiveTime: 0.15
   finisherRecovery: 0.55
+  hitlagDuration: 0.15
+  hitlagVelocityRetention: 0.15
+  counterImpactMultiplier: 2
+  lightPoiseDamage: 20
+  heavyPoiseDamage: 45
+  finisherPoiseDamage: 999
 --- !u!1 &619394800
 GameObject:
   m_ObjectHideFlags: 0
@@ -1286,6 +1342,7 @@ Transform:
   m_Children:
   - {fileID: 1741796361}
   - {fileID: 1331624486}
+  - {fileID: 163985773}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!114 &856340126
@@ -1313,6 +1370,7 @@ MonoBehaviour:
   lightActiveTime: 0.1
   lightRecovery: 0.3
   lightCooldown: 1.2
+  lightPoiseDamage: 20
   heavyAttackRange: 2.3
   heavyDamage: 3
   heavyStartup: 0.4
@@ -1320,8 +1378,10 @@ MonoBehaviour:
   heavyRecovery: 0.55
   heavyCooldown: 3
   heavyTriggerRange: 1.6
+  heavyPoiseDamage: 45
   heavyTelegraphVFX: {fileID: 0}
   staggerDuration: 0.5
+  poiseBreakStaggerDuration: 1.8
   groundCheck: {fileID: 1741796361}
   groundLayer:
     serializedVersion: 2
@@ -1945,7 +2005,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::PlayerBehavior
   moveSpeed: 4.5
-  attackMovementMultiplier: 0.3
+  attackRecoveryMovementMultiplier: 0.15
   jumpForce: 7
   fallMultiplier: 2.8
   lowJumpMultiplier: 2
@@ -1966,6 +2026,7 @@ MonoBehaviour:
     m_Bits: 0
   isLocked: 0
   isAttacking: 0
+  isInAttackStartupOrActive: 0
 --- !u!50 &1664147566
 Rigidbody2D:
   serializedVersion: 5
@@ -2136,18 +2197,22 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 74f7f89ba455f3941a579fefa4b64a1e, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::PlayerHealth
-  maxHealth: 100000
-  startingHealth: 100000
+  maxHealth: 10
+  startingHealth: 10
   iframeDuration: 0.8
   parryWindowDuration: 0.3
   parryCooldown: 1.2
-  parryHitStopDuration: 0.22
+  parryHitStopDuration: 0.5
   maxDefendDuration: 4
   blockStaminaRatio: 0.8
   blockDamageRatio: 0.2
+  guardCrushStaminaThreshold: 30
+  guardCrushKnockbackBonus: 4
+  counterWindowDuration: 0.6
+  counterDamageMultiplier: 2.2
   knockbackForceX: 0
   knockbackForceY: 0
-  hurtLockDuration: 0.3
+  hurtLockDuration: 0.8
   debugParry: 1
 --- !u!95 &1664147572
 Animator:
@@ -2195,15 +2260,15 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: b2e6c2e56f39d5845ae978b4976be917, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::HitFlash
-  flashDuration: 0.07
+  flashDuration: 0.1
   flashCount: 2
-  flashIntensity: 0.55
-  impactDuration: 0.05
+  flashIntensity: 0.68
+  impactDuration: 0.1
   impactIntensity: 0.75
   impactColor: {r: 1, g: 1, b: 1, a: 1}
-  parryDuration: 0.12
-  parryIntensity: 0.9
-  parryColor: {r: 1, g: 0.9, b: 0.2, a: 1}
+  parryDuration: 0.2
+  parryIntensity: 1
+  parryColor: {r: 0.12495552, g: 0.6792453, b: 0.6792453, a: 0.7372549}
 --- !u!114 &1664147576
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -2238,6 +2303,57 @@ MonoBehaviour:
     m_Bits: 128
   successVFX: {fileID: 0}
   failVFX: {fileID: 0}
+--- !u!1 &1689351119
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1689351120}
+  - component: {fileID: 1689351121}
+  m_Layer: 0
+  m_Name: CameraRig
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &1689351120
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1689351119}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 433166025}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &1689351121
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1689351119}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: ae7cbbc5888a9d94f95f888407099990, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::CameraImpulse
+  targetCamera: {fileID: 519420031}
+  parryZoomAmount: 0.1
+  parryZoomInTime: 0.2
+  parryZoomOutTime: 0.15
+  counterZoomAmount: 0.2
+  counterZoomInTime: 0.25
+  counterZoomOutTime: 0.15
 --- !u!1 &1741796360
 GameObject:
   m_ObjectHideFlags: 0

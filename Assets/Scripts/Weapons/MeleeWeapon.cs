@@ -50,6 +50,25 @@ public class MeleeWeapon : MonoBehaviour
     [SerializeField] private float finisherActiveTime = 0.15f;
     [SerializeField] private float finisherRecovery   = 0.55f;
 
+    [Header("Hitlag direcional")]
+    [Tooltip("Duração em segundos que o inimigo fica congelado no momento do hit")]
+    [SerializeField] private float hitlagDuration = 0.05f;
+    [Tooltip("Fator de retenção de velocidade após o hitlag (0 = para completamente)")]
+    [Range(0f, 1f)]
+    [SerializeField] private float hitlagVelocityRetention = 0.15f;
+
+    [Header("Counter attack")]
+    [Tooltip("Multiplicador de shake e hitstop quando o hit é um counter (pós-parry)")]
+    [SerializeField] private float counterImpactMultiplier = 2f;
+
+    [Header("Dano de postura (Poise)")]
+    [Tooltip("Quanto dano de postura o light attack causa ao inimigo. Inimigos com EnemyPoise entram em stagger quando postura zera.")]
+    [SerializeField] private float lightPoiseDamage    = 20f;
+    [Tooltip("Quanto dano de postura o heavy attack causa.")]
+    [SerializeField] private float heavyPoiseDamage    = 45f;
+    [Tooltip("Quanto dano de postura o finisher causa. 999 = quebra a postura sempre.")]
+    [SerializeField] private float finisherPoiseDamage = 999f;
+
     private enum AttackType { Light, Heavy, Finisher }
 
     private int   comboStep          = 0;
@@ -69,12 +88,14 @@ public class MeleeWeapon : MonoBehaviour
     private const string TriggerLight    = "LightAttack";
     private const string TriggerHeavy    = "HeavyAttack";
     private const string TriggerFinisher = "Finisher";
+    private const string TriggerCounter  = "CounterAttack";
 
     private InputAction lightAction;
     private InputAction heavyAction;
 
     private PlayerBehavior               behavior;
     private PlayerStamina                stamina;
+    private PlayerHealth                 health;
     private CharacterAnimationController animController;
 
     void Awake()
@@ -90,6 +111,7 @@ public class MeleeWeapon : MonoBehaviour
     {
         behavior       = GetComponentInParent<PlayerBehavior>();
         stamina        = GetComponentInParent<PlayerStamina>();
+        health         = GetComponentInParent<PlayerHealth>();
         animController = GetComponentInParent<CharacterAnimationController>();
 
         if (animController == null)
@@ -97,7 +119,18 @@ public class MeleeWeapon : MonoBehaviour
     }
 
     void OnEnable()  { lightAction.Enable(); heavyAction.Enable(); }
-    void OnDisable() { lightAction.Disable(); heavyAction.Disable(); }
+    void OnDisable()
+    {
+        lightAction.Disable();
+        heavyAction.Disable();
+
+        // Garante limpeza das flags se o objeto for desativado no meio de um ataque.
+        if (behavior != null)
+        {
+            behavior.isAttacking               = false;
+            behavior.isInAttackStartupOrActive = false;
+        }
+    }
 
     void Update()
     {
@@ -215,16 +248,50 @@ public class MeleeWeapon : MonoBehaviour
         float recovery   = type == AttackType.Light ? lightRecovery   : type == AttackType.Heavy ? heavyRecovery   : finisherRecovery;
         string trigger   = type == AttackType.Light ? TriggerLight    : type == AttackType.Heavy ? TriggerHeavy    : TriggerFinisher;
 
-        animController?.SetTriggerDirect(trigger);
-        if (behavior != null) behavior.isAttacking = true;
+        // Verifica counter ANTES de setar o trigger para usar a animação correta
+        bool isCounter = health != null && health.IsCounterWindowOpen;
+        if (isCounter)
+        {
+            animController?.SetTriggerDirect(TriggerCounter);
+            // Zoom sincronizado com o início da animação de counter —
+            // não no ApplyHit (que depende de acertar o inimigo e roda no active).
+            CameraImpulse.Instance?.CounterZoom();
+        }
+        else
+            animController?.SetTriggerDirect(trigger);
+
+        if (behavior != null)
+        {
+            behavior.isAttacking              = true;
+            behavior.isInAttackStartupOrActive = true;  // trava movimento
+        }
 
         yield return new WaitForSecondsRealtime(startup);
 
-        ApplyHit(type);
+        ApplyHit(type, isCounter);
+
+        // Consome a counter window após o hit ser aplicado
+        if (isCounter && health != null)
+            health.ConsumeCounterWindow();
 
         yield return new WaitForSecondsRealtime(activeTime);
 
-        if (behavior != null) behavior.isAttacking = false;
+        // Aguarda o HitStop terminar antes de liberar o movimento.
+        // WaitForSecondsRealtime avança com timeScale=0, mas o Animator congela —
+        // soltar a trava enquanto o Animator ainda está no frame congelado causava
+        // o "travamento no último frame" visível especialmente no heavy attack.
+        if (HitStop.Instance != null)
+            while (HitStop.Instance.IsActive)
+                yield return null;
+
+        // Libera só a trava de movimento — isAttacking permanece true
+        // até o fim do recovery para bloquear TryConsumeBuffer no Update,
+        // impedindo que spam dispare um novo trigger antes do clip terminar.
+        if (behavior != null)
+        {
+            behavior.isInAttackStartupOrActive = false;
+            behavior.isAttacking              = false;
+        }
 
         if (type == AttackType.Light)
         {
@@ -232,8 +299,10 @@ public class MeleeWeapon : MonoBehaviour
             else               { finisherWindowOpen = true; finisherWindowTimer = finisherWindowDuration; }
         }
 
-        isAttacking = false;
-
+        // Recovery completo antes de liberar o buffer.
+        // isAttacking (local) fica true durante todo o recovery — Update não
+        // chama TryConsumeBuffer enquanto isso, então o próximo ataque só
+        // começa (e dispara o trigger) quando o clip atual já terminou.
         float recoveryElapsed = 0f;
         while (recoveryElapsed < recovery)
         {
@@ -242,39 +311,104 @@ public class MeleeWeapon : MonoBehaviour
             yield return null;
         }
 
+        isAttacking = false;
         TryConsumeBuffer();
 
-        if (!isAttacking && !comboWindowOpen && !finisherWindowOpen)
+        // Se nenhum novo ataque foi iniciado pelo buffer, força saída do estado
+        // de ataque no Animator. "Idle" deve ser o estado raiz da blend tree
+        // (Speed=0→Idle, Speed>0→Walk/Run) para que a transição idle→walk seja
+        // natural sem delay de interpolação.
+        if (!isAttacking)
+        {
             comboStep = 0;
+            animController?.ForceState("Idle");
+        }
     }
 
-    private void ApplyHit(AttackType type)
+    private void ApplyHit(AttackType type, bool isCounter)
     {
         float range   = type == AttackType.Light ? lightAttackRange    : type == AttackType.Heavy ? heavyAttackRange    : finisherAttackRange;
-        int   damage  = type == AttackType.Light ? lightDamage         : type == AttackType.Heavy ? heavyDamage         : finisherDamage;
+        int   baseDmg = type == AttackType.Light ? lightDamage         : type == AttackType.Heavy ? heavyDamage         : finisherDamage;
         float hitStop = type == AttackType.Light ? lightHitStop        : type == AttackType.Heavy ? heavyHitStop        : finisherHitStop;
         float shakeI  = type == AttackType.Light ? lightShakeIntensity : type == AttackType.Heavy ? heavyShakeIntensity : finisherShakeIntensity;
         float shakeD  = type == AttackType.Light ? lightShakeDuration  : type == AttackType.Heavy ? heavyShakeDuration  : finisherShakeDuration;
 
+        // Aplica multiplicadores de counter
+        int   damage     = isCounter
+            ? Mathf.RoundToInt(baseDmg * (health != null ? health.CounterDamageMultiplier : 2f))
+            : baseDmg;
+        float finalStop  = isCounter ? hitStop  * counterImpactMultiplier : hitStop;
+        float finalShakeI = isCounter ? shakeI  * counterImpactMultiplier : shakeI;
+
         Collider2D[] hits = Physics2D.OverlapCircleAll(attackPoint.position, range, enemyLayer);
         if (hits.Length == 0) return;
 
-        HitStop.Instance?.DoHitStop(hitStop);
-        CameraShake.Instance?.Shake(shakeI, shakeD);
+        HitStop.Instance?.DoHitStop(finalStop);
+        CameraShake.Instance?.Shake(finalShakeI, shakeD);
 
         foreach (Collider2D hit in hits)
         {
-            var damageable = hit.GetComponent<IDamageable>()
-                          ?? hit.GetComponentInParent<IDamageable>();
-            damageable?.TakeDamage(damage, transform.position);
+            // Hitlag direcional — congela o inimigo no momento exato do impacto
+            Rigidbody2D enemyRb = hit.GetComponent<Rigidbody2D>()
+                                ?? hit.GetComponentInParent<Rigidbody2D>();
+            if (enemyRb != null)
+                StartCoroutine(HitlagRoutine(enemyRb));
 
-            // NOVO — ImpactFlash: frame branco curto no momento exato do hit,
-            // encadeia automaticamente o Flash normal de dano depois.
-            // Substitui as duas chamadas separadas de Flash() que existiam antes.
+            // Ataques pesados chamam TakeDamageHeavy para habilitar guard crush
+            if (type == AttackType.Heavy)
+            {
+                var damageable = hit.GetComponent<IDamageable>()
+                              ?? hit.GetComponentInParent<IDamageable>();
+                var playerDmg = hit.GetComponent<PlayerHealth>()
+                             ?? hit.GetComponentInParent<PlayerHealth>();
+
+                if (playerDmg != null)
+                    playerDmg.TakeDamageHeavy(damage, transform.position);
+                else
+                    damageable?.TakeDamage(damage, transform.position);
+            }
+            else
+            {
+                var damageable = hit.GetComponent<IDamageable>()
+                              ?? hit.GetComponentInParent<IDamageable>();
+                damageable?.TakeDamage(damage, transform.position);
+            }
+
+            // Dano de postura — independente do dano de vida.
+            // O poise damage é determinado aqui (no atacante) e não no inimigo,
+            // para que cada arma possa ter valores diferentes sem alterar EnemyPoise.
+            float poiseDmg = type == AttackType.Light    ? lightPoiseDamage
+                           : type == AttackType.Heavy    ? heavyPoiseDamage
+                           : /* Finisher */                finisherPoiseDamage;
+
+            var enemyPoise = hit.GetComponent<EnemyPoise>()
+                          ?? hit.GetComponentInParent<EnemyPoise>();
+            enemyPoise?.ReceivePoiseHit(poiseDmg);
+
             var hitFlash = hit.GetComponent<HitFlash>()
                         ?? hit.GetComponentInParent<HitFlash>();
             hitFlash?.ImpactFlash();
         }
+    }
+
+    // Hitlag direcional — congela o inimigo por alguns frames no momento do hit,
+    // criando a sensação de peso e impacto físico inspirada em Blasphemous.
+    private IEnumerator HitlagRoutine(Rigidbody2D enemyRb)
+    {
+        if (enemyRb == null) yield break;
+
+        float   savedGravity = enemyRb.gravityScale;
+        Vector2 savedVel     = enemyRb.linearVelocity;
+
+        enemyRb.gravityScale   = 0f;
+        enemyRb.linearVelocity = Vector2.zero;
+
+        yield return new WaitForSecondsRealtime(hitlagDuration);
+
+        if (enemyRb == null) yield break;
+
+        enemyRb.gravityScale   = savedGravity;
+        enemyRb.linearVelocity = savedVel * hitlagVelocityRetention;
     }
 
     void OnDrawGizmosSelected()

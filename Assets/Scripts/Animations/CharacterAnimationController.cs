@@ -10,10 +10,11 @@ public class CharacterAnimationController : MonoBehaviour
     private Animator _animator;
 
     // Hash cache
-    private static readonly int AnimSpeed       = Animator.StringToHash("Speed");
-    private static readonly int AnimJump        = Animator.StringToHash("Jump");
-    private static readonly int AnimIsGrounded  = Animator.StringToHash("IsGrounded");
-    private static readonly int AnimIsDefending = Animator.StringToHash("IsDefending");
+    private static readonly int AnimSpeed        = Animator.StringToHash("Speed");
+    private static readonly int AnimJump         = Animator.StringToHash("Jump");
+    private static readonly int AnimIsGrounded   = Animator.StringToHash("IsGrounded");
+    private static readonly int AnimIsDefending  = Animator.StringToHash("IsDefending");
+    private static readonly int AnimDefendStart  = Animator.StringToHash("DefendStart");
 
     void Awake()
     {
@@ -23,7 +24,9 @@ public class CharacterAnimationController : MonoBehaviour
     public void SetSpeed(float speed)
     {
         if (HasParameter("Speed", AnimatorControllerParameterType.Float))
-            _animator.SetFloat(AnimSpeed, speed);
+            // dampTime=0 → sem interpolação, blend tree responde no mesmo frame.
+            // Evita o delay visual entre idle pós-ataque e walk.
+            _animator.SetFloat(AnimSpeed, speed, 0f, Time.deltaTime);
     }
 
     public void UpdateGrounded(bool grounded)
@@ -59,17 +62,9 @@ public class CharacterAnimationController : MonoBehaviour
     /// <summary>
     /// Trigger direto SEM ResetTrigger.
     ///
-    /// FIX DELAY DE ATAQUE — o problema:
-    /// TriggerAnimation faz ResetTrigger antes de SetTrigger.
-    /// Quando o Animator ainda está em transição de saída do estado idle,
-    /// o ResetTrigger cancela o trigger que acabou de ser setado, descartando
-    /// o input silenciosamente. Em ataques rápidos (spam ou combo) isso cria
-    /// o delay percebido: o primeiro clique é engolido e o ataque só começa
-    /// no segundo.
-    ///
-    /// Use este método para todos os triggers de ataque do player (LightAttack,
-    /// HeavyAttack, Finisher) onde o Animator Controller garante que o estado
-    /// anterior já concluiu antes de aceitar o próximo trigger.
+    /// Use para todos os triggers de ataque (LightAttack, HeavyAttack, Finisher,
+    /// CounterAttack) e para DefendStart — onde o ResetTrigger cancelaria o trigger
+    /// silenciosamente durante transições de saída de estado.
     /// </summary>
     public void SetTriggerDirect(string triggerName)
     {
@@ -88,12 +83,34 @@ public class CharacterAnimationController : MonoBehaviour
 
     /// <summary>
     /// Entrar / sair da defesa.
-    /// Usa bool IsDefending.
+    /// FIX: StartDefend chama SetTriggerDirect("DefendStart") para a transição imediata,
+    /// e depois SetDefending(true) para manter o bool que sustenta o estado Defending.
+    /// Sem o trigger, a transição dependia apenas do bool avaliado no próximo frame
+    /// do Animator, causando 1 frame de delay visual.
     /// </summary>
     public void SetDefending(bool value)
     {
         if (HasParameter("IsDefending", AnimatorControllerParameterType.Bool))
             _animator.SetBool(AnimIsDefending, value);
+    }
+
+    /// <summary>
+    /// Força transição imediata para o estado indicado, ignorando exit time
+    /// e qualquer trigger pendente na fila do Animator.
+    /// Use para interrupções de alta prioridade: parry stagger, poise break, morte.
+    /// </summary>
+    public void ForceState(string stateName, int layer = 0)
+    {
+        // Limpa todos os triggers pendentes para evitar que a animação anterior
+        // "reapareça" um frame depois por um trigger stale ainda na fila.
+        foreach (var param in _animator.parameters)
+        {
+            if (param.type == AnimatorControllerParameterType.Trigger)
+                _animator.ResetTrigger(param.name);
+        }
+
+        // CrossFade com duration=0 → transição instantânea, ignora exit time.
+        _animator.CrossFade(stateName, 0f, layer);
     }
 
     private bool HasParameter(string paramName, AnimatorControllerParameterType type)

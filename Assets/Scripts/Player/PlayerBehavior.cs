@@ -16,8 +16,8 @@ public class PlayerBehavior : MonoBehaviour
     [SerializeField] private float moveSpeed = 4.5f;
 
     [Header("Combate — movimento")]
-    [Tooltip("Fração da velocidade mantida durante startup/active do ataque (0 = trava, 1 = livre)")]
-    [SerializeField] private float attackMovementMultiplier = 0.3f;
+    [Tooltip("Velocidade durante recovery do ataque (0 = trava total, 1 = livre). Startup e active sempre travam.")]
+    [SerializeField] private float attackRecoveryMovementMultiplier = 0.15f;
 
     [Header("Pulo")]
     [SerializeField] private float jumpForce         = 14f;
@@ -59,8 +59,17 @@ public class PlayerBehavior : MonoBehaviour
     private float _facingDirection = 1f;
     private Vector3 originalScale;
 
+    // FIX DEFEND — cache do estado anterior para detectar release
+    // mesmo quando Update estava travado no frame do evento.
+    private bool _defendWasHeld;
+
     [HideInInspector] public bool isLocked;
     [HideInInspector] public bool isAttacking;
+    /// <summary>
+    /// Setado por MeleeWeapon: true durante startup+active (trava movimento),
+    /// false durante recovery (permite movimento reduzido).
+    /// </summary>
+    [HideInInspector] public bool isInAttackStartupOrActive;
 
     private PlayerHealth _health;
     private CharacterAnimationController animController;
@@ -129,11 +138,17 @@ public class PlayerBehavior : MonoBehaviour
 
     void Update()
     {
-        // FIX HURT — quando travado, limpa o input horizontal para evitar
-        // que o valor acumulado seja aplicado assim que isLocked virar false.
-        // Sem isso, o player "escorrega" na direção do último input após o hurt.
+        // FIX DEFEND — lê o input de defesa ANTES do guard isLocked.
+        // Isso garante que press e release sejam processados mesmo durante
+        // hurt stun ou qualquer outro estado de lock, eliminando a janela
+        // onde StopDefend nunca era chamado se o botão fosse solto enquanto
+        // o player estava travado.
+        HandleDefendInput();
+
         if (isLocked)
         {
+            // FIX HURT — quando travado, limpa o input horizontal para evitar
+            // que o valor acumulado seja aplicado assim que isLocked virar false.
             horizontalInput = 0f;
             return;
         }
@@ -144,8 +159,29 @@ public class PlayerBehavior : MonoBehaviour
         UpdateTimers();
         HandleJump();
         HandleDash();
-        HandleDefend();
         UpdateFacing();
+    }
+
+    // FIX DEFEND — separado de HandleDefend original.
+    // Usa cache _defendWasHeld para comparação frame a frame em vez de depender
+    // exclusivamente de WasReleasedThisFrame, que é perdido quando Update estava
+    // bloqueado no frame do evento de release.
+    private void HandleDefendInput()
+    {
+        if (_health == null) return;
+
+        bool heldNow = defendAction.IsPressed();
+
+        // Press: inicia defesa se não está em dash
+        if (defendAction.WasPressedThisFrame() && !_isDashing)
+            _health.StartDefend();
+
+        // Release: detecta soltar o botão comparando com o frame anterior.
+        // WasReleasedThisFrame falhava quando Update era pulado por isLocked.
+        if (_defendWasHeld && !heldNow)
+            _health.StopDefend();
+
+        _defendWasHeld = heldNow;
     }
 
     private void UpdateGrounded()
@@ -205,17 +241,6 @@ public class PlayerBehavior : MonoBehaviour
             StartCoroutine(DashRoutine());
     }
 
-    private void HandleDefend()
-    {
-        if (_health == null) return;
-
-        if (defendAction.WasPressedThisFrame() && !_isDashing)
-            _health.StartDefend();
-
-        if (defendAction.WasReleasedThisFrame())
-            _health.StopDefend();
-    }
-
     void FixedUpdate()
     {
         if (isLocked || _isDashing) return;
@@ -228,9 +253,21 @@ public class PlayerBehavior : MonoBehaviour
     {
         float input = _isGrounded ? horizontalInput : horinzontalIsLocked;
 
-        float multiplier = isAttacking ? attackMovementMultiplier : 1f;
+        float multiplier;
+        if (isInAttackStartupOrActive)
+            multiplier = 0f;                          // trava total durante startup e active
+        else if (isAttacking)
+            multiplier = attackRecoveryMovementMultiplier; // deslizamento mínimo no recovery
+        else
+            multiplier = 1f;
 
-        playerRb.linearVelocity = new Vector2(input * moveSpeed * multiplier, playerRb.linearVelocity.y);
+        // Quando travado, zera a velocidade horizontal em vez de só não acumular input —
+        // impede que momento residual de antes do ataque continue deslizando o player.
+        if (isInAttackStartupOrActive && _isGrounded)
+            playerRb.linearVelocity = new Vector2(0f, playerRb.linearVelocity.y);
+        else
+            playerRb.linearVelocity = new Vector2(input * moveSpeed * multiplier, playerRb.linearVelocity.y);
+
         animController?.SetSpeed(Mathf.Abs(playerRb.linearVelocity.x));
     }
 
@@ -253,6 +290,13 @@ public class PlayerBehavior : MonoBehaviour
         _isDashing        = true;
         _isDashInvincible = true;
         dashCooldownTimer = dashCooldown;
+
+        // Dash cancela defesa e qualquer trava de ataque
+        if (_health != null && _health.IsDefending)
+            _health.StopDefend();
+
+        isAttacking               = false;
+        isInAttackStartupOrActive = false;
 
         float dir = horizontalInput != 0f
             ? Mathf.Sign(horizontalInput)

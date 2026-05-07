@@ -12,6 +12,8 @@ public class HitStop : MonoBehaviour
 
     private Coroutine routine;
 
+    public bool IsActive => routine != null;
+
     void Awake()
     {
         if (Instance != null && Instance != this) { Destroy(gameObject); return; }
