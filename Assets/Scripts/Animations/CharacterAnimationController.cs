@@ -1,4 +1,5 @@
 using UnityEngine;
+using System.Collections.Generic;
 
 /// <summary>
 /// Controller centralizado de animação.
@@ -16,31 +17,53 @@ public class CharacterAnimationController : MonoBehaviour
     private static readonly int AnimIsDefending  = Animator.StringToHash("IsDefending");
     private static readonly int AnimDefendStart  = Animator.StringToHash("DefendStart");
 
+    // Cache de parâmetros — construído uma vez no Awake para evitar iteração
+    // a cada chamada de HasParameter (que antes percorria o array inteiro por frame).
+    private readonly HashSet<string> _triggerParams = new HashSet<string>();
+    private readonly HashSet<string> _boolParams    = new HashSet<string>();
+    private readonly HashSet<string> _floatParams   = new HashSet<string>();
+
     void Awake()
     {
         _animator = GetComponent<Animator>();
+        BuildParameterCache();
+    }
+
+    private void BuildParameterCache()
+    {
+        _triggerParams.Clear();
+        _boolParams.Clear();
+        _floatParams.Clear();
+
+        foreach (var param in _animator.parameters)
+        {
+            switch (param.type)
+            {
+                case AnimatorControllerParameterType.Trigger: _triggerParams.Add(param.name); break;
+                case AnimatorControllerParameterType.Bool:    _boolParams.Add(param.name);    break;
+                case AnimatorControllerParameterType.Float:   _floatParams.Add(param.name);   break;
+            }
+        }
     }
 
     public void SetSpeed(float speed)
     {
-        if (HasParameter("Speed", AnimatorControllerParameterType.Float))
-            // dampTime=0 → sem interpolação, blend tree responde no mesmo frame.
-            // Evita o delay visual entre idle pós-ataque e walk.
+        if (_floatParams.Contains("Speed"))
             _animator.SetFloat(AnimSpeed, speed, 0f, Time.deltaTime);
     }
 
     public void UpdateGrounded(bool grounded)
     {
-        if (HasParameter("IsGrounded", AnimatorControllerParameterType.Bool))
+        if (_boolParams.Contains("IsGrounded"))
             _animator.SetBool(AnimIsGrounded, grounded);
     }
 
     public void TriggerJump()
     {
-        if (HasParameter("Jump", AnimatorControllerParameterType.Trigger))
+        if (_triggerParams.Contains("Jump"))
             _animator.SetTrigger(AnimJump);
 
-        if (HasParameter("IsGrounded", AnimatorControllerParameterType.Bool))
+        if (_boolParams.Contains("IsGrounded"))
             _animator.SetBool(AnimIsGrounded, false);
     }
 
@@ -52,7 +75,7 @@ public class CharacterAnimationController : MonoBehaviour
     /// </summary>
     public void TriggerAnimation(string triggerName)
     {
-        if (HasParameter(triggerName, AnimatorControllerParameterType.Trigger))
+        if (_triggerParams.Contains(triggerName))
         {
             _animator.ResetTrigger(triggerName);
             _animator.SetTrigger(triggerName);
@@ -61,14 +84,11 @@ public class CharacterAnimationController : MonoBehaviour
 
     /// <summary>
     /// Trigger direto SEM ResetTrigger.
-    ///
-    /// Use para todos os triggers de ataque (LightAttack, HeavyAttack, Finisher,
-    /// CounterAttack) e para DefendStart — onde o ResetTrigger cancelaria o trigger
-    /// silenciosamente durante transições de saída de estado.
+    /// Use para todos os triggers de ataque e para DefendStart.
     /// </summary>
     public void SetTriggerDirect(string triggerName)
     {
-        if (HasParameter(triggerName, AnimatorControllerParameterType.Trigger))
+        if (_triggerParams.Contains(triggerName))
             _animator.SetTrigger(triggerName);
     }
 
@@ -77,41 +97,71 @@ public class CharacterAnimationController : MonoBehaviour
     /// </summary>
     public void SetBool(string param, bool value)
     {
-        if (HasParameter(param, AnimatorControllerParameterType.Bool))
+        if (_boolParams.Contains(param))
             _animator.SetBool(param, value);
     }
 
     /// <summary>
     /// Entrar / sair da defesa.
-    /// FIX: StartDefend chama SetTriggerDirect("DefendStart") para a transição imediata,
-    /// e depois SetDefending(true) para manter o bool que sustenta o estado Defending.
-    /// Sem o trigger, a transição dependia apenas do bool avaliado no próximo frame
-    /// do Animator, causando 1 frame de delay visual.
     /// </summary>
     public void SetDefending(bool value)
     {
-        if (HasParameter("IsDefending", AnimatorControllerParameterType.Bool))
+        if (_boolParams.Contains("IsDefending"))
             _animator.SetBool(AnimIsDefending, value);
     }
 
     /// <summary>
-    /// Força transição imediata para o estado indicado, ignorando exit time
-    /// e qualquer trigger pendente na fila do Animator.
-    /// Use para interrupções de alta prioridade: parry stagger, poise break, morte.
+    /// Força transição imediata para o estado indicado, ignorando exit time.
+    /// Se o state não existir no Animator, loga um aviso e não faz nada —
+    /// evita o erro "State could not be found" em builds de teste.
     /// </summary>
     public void ForceState(string stateName, int layer = 0)
     {
-        // Limpa todos os triggers pendentes para evitar que a animação anterior
-        // "reapareça" um frame depois por um trigger stale ainda na fila.
+        // Verifica se o state existe antes de tentar a transição.
+        // GetCurrentAnimatorStateInfo não serve aqui; usamos HasState via hash.
+        if (!_animator.HasState(layer, Animator.StringToHash(stateName)))
+        {
+            Debug.LogWarning($"[AnimController] ForceState: state '{stateName}' não existe no layer {layer}. Adicione o state ao Animator.");
+            return;
+        }
+
         foreach (var param in _animator.parameters)
         {
             if (param.type == AnimatorControllerParameterType.Trigger)
                 _animator.ResetTrigger(param.name);
         }
 
-        // CrossFade com duration=0 → transição instantânea, ignora exit time.
         _animator.CrossFade(stateName, 0f, layer);
     }
+
+    // ─── Relay de Animation Events ────────────────────────────────────────────
+    //
+    // Clipes compartilhados entre Player e Enemy disparam eventos neste componente.
+    // Cada método faz o relay para o receptor correto no mesmo GameObject ou pai.
+
+    /// <summary>
+    /// Relay do Animation Event de ataque do Enemy.
+    /// </summary>
+    public void AnimationEvent_DealAttackHit()
+    {
+        GetComponent<EnemyBehavior>()?.DealAttackHit();
+    }
+
+    /// <summary>
+    /// Relay dos Animation Events do MeleeWeapon (player).
+    /// Necessário quando o MeleeWeapon está no mesmo GameObject que o Animator.
+    /// </summary>
+    public void OnAttackActiveStart()  => GetComponent<MeleeWeapon>()?.OnAttackActiveStart();
+    public void OnAttackActiveEnd()    => GetComponent<MeleeWeapon>()?.OnAttackActiveEnd();
+    public void OnAttackRecoveryEnd()  => GetComponent<MeleeWeapon>()?.OnAttackRecoveryEnd();
+    public void OnComboWindowOpen()    => GetComponent<MeleeWeapon>()?.OnComboWindowOpen();
+    public void OnComboWindowClose()   => GetComponent<MeleeWeapon>()?.OnComboWindowClose();
+
+    /// <summary>
+    /// Relay dos Animation Events do PlayerHealth (parry).
+    /// </summary>
+    public void OnParryWindowOpen()    => GetComponent<PlayerHealth>()?.OnParryWindowOpen();
+    public void OnParryWindowClose()   => GetComponent<PlayerHealth>()?.OnParryWindowClose();
 
     private bool HasParameter(string paramName, AnimatorControllerParameterType type)
     {
@@ -121,19 +171,5 @@ public class CharacterAnimationController : MonoBehaviour
                 return true;
         }
         return false;
-    }
-
-    /// <summary>
-    /// Relay do Animation Event.
-    /// Clip compartilhado chama isso.
-    /// Enemy usa DealAttackHit().
-    /// Player ignora.
-    /// </summary>
-    public void AnimationEvent_DealAttackHit()
-    {
-        EnemyBehavior enemy = GetComponent<EnemyBehavior>();
-
-        if (enemy != null)
-            enemy.DealAttackHit();
     }
 }

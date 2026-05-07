@@ -156,6 +156,14 @@ public class MeleeWeapon : MonoBehaviour
     private const string TriggerFinisher = "Finisher";
     private const string TriggerCounter  = "CounterAttack";
 
+    // Nomes dos states no Animator — devem bater exatamente com o grafo (case-sensitive).
+    // Se o state não existir, AttackRoutine cai automaticamente nos timers legados.
+    private const string StateLight    = "light_attack";
+    private const string StateHeavy    = "heavy_attack";
+    private const string StateFinisher = "Finisher";
+    private const string StateCounter  = "CounterAttack";
+    private const string StateIdle     = "idle";
+
     private InputAction lightAction;
     private InputAction heavyAction;
 
@@ -163,6 +171,7 @@ public class MeleeWeapon : MonoBehaviour
     private PlayerStamina                stamina;
     private PlayerHealth                 health;
     private CharacterAnimationController animController;
+    private Animator                     _animator;
 
     // ─── Unity ────────────────────────────────────────────────────────────────
 
@@ -181,6 +190,7 @@ public class MeleeWeapon : MonoBehaviour
         stamina        = GetComponentInParent<PlayerStamina>();
         health         = GetComponentInParent<PlayerHealth>();
         animController = GetComponentInParent<CharacterAnimationController>();
+        _animator      = GetComponentInParent<Animator>();
 
         if (animController == null)
             Debug.LogError("[MeleeWeapon] CharacterAnimationController não encontrado no pai.");
@@ -366,6 +376,16 @@ public class MeleeWeapon : MonoBehaviour
 
     // ─── Rotina de ataque ─────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Retorna true se o Animator está no state de nome <paramref name="stateName"/>
+    /// na Base Layer. Usado para detectar se um clipe existe antes de aguardar eventos.
+    /// </summary>
+    private bool IsInState(string stateName)
+    {
+        if (_animator == null) return false;
+        return _animator.GetCurrentAnimatorStateInfo(0).IsName(stateName);
+    }
+
     private IEnumerator AttackRoutine(AttackType type)
     {
         isAttacking = true;
@@ -374,6 +394,7 @@ public class MeleeWeapon : MonoBehaviour
         float activeTime = type == AttackType.Light ? lightActiveTime : type == AttackType.Heavy ? heavyActiveTime : finisherActiveTime;
         float recovery   = type == AttackType.Light ? lightRecovery   : type == AttackType.Heavy ? heavyRecovery   : finisherRecovery;
         string trigger   = type == AttackType.Light ? TriggerLight    : type == AttackType.Heavy ? TriggerHeavy    : TriggerFinisher;
+        string stateName = type == AttackType.Light ? StateLight      : type == AttackType.Heavy ? StateHeavy      : StateFinisher;
 
         // Verifica counter antes de setar o trigger
         bool isCounter = health != null && health.IsCounterWindowOpen;
@@ -381,6 +402,7 @@ public class MeleeWeapon : MonoBehaviour
         {
             animController?.SetTriggerDirect(TriggerCounter);
             CameraImpulse.Instance?.CounterZoom();
+            stateName = StateCounter;
         }
         else
             animController?.SetTriggerDirect(trigger);
@@ -391,16 +413,25 @@ public class MeleeWeapon : MonoBehaviour
             behavior.isInAttackStartupOrActive = true;
         }
 
-        // Guarda estado para o Animation Event acessar
         _currentAttackType = type;
         _currentIsCounter  = isCounter;
 
+        // ── Detecta se o clipe existe ─────────────────────────────────────────
+        //
+        // Aguarda 1 frame para o Animator processar o trigger e fazer a transição.
+        // Se o state ativo não for o esperado, o clipe não existe no grafo —
+        // todas as fases usam timers legados sem emitir warnings de timeout.
+
+        yield return null;
+        bool stateExists = IsInState(stateName);
+
+        if (!stateExists)
+            Debug.Log($"[MeleeWeapon] State '{stateName}' não encontrado no Animator — usando timers legados para {type}.");
+
         // ── Fase de Startup ───────────────────────────────────────────────────
 
-        if (attackDrivenByAnimation)
+        if (attackDrivenByAnimation && stateExists)
         {
-            // Aguarda o Animation Event OnAttackActiveStart
-            // com timeout de segurança para não travar se o evento não vier
             _animEventActiveStart = false;
             float elapsed = 0f;
             while (!_animEventActiveStart && elapsed < animEventTimeout)
@@ -410,11 +441,10 @@ public class MeleeWeapon : MonoBehaviour
             }
 
             if (!_animEventActiveStart)
-                Debug.LogWarning($"[MeleeWeapon] Timeout aguardando OnAttackActiveStart ({type}). Verifique o Animation Event no clipe.");
+                Debug.LogWarning($"[MeleeWeapon] Timeout aguardando OnAttackActiveStart ({type}). Adicione o Animation Event no clipe '{stateName}'.");
         }
         else
         {
-            // Modo legado: timer fixo
             yield return new WaitForSecondsRealtime(startup);
         }
 
@@ -427,9 +457,8 @@ public class MeleeWeapon : MonoBehaviour
 
         // ── Fim do Active ─────────────────────────────────────────────────────
 
-        if (attackDrivenByAnimation)
+        if (attackDrivenByAnimation && stateExists)
         {
-            // Aguarda OnAttackActiveEnd ou fallback
             _animEventActiveEnd = false;
             float elapsed = 0f;
             while (!_animEventActiveEnd && elapsed < activeTime + 0.1f)
@@ -455,18 +484,12 @@ public class MeleeWeapon : MonoBehaviour
         }
 
         // ── Abertura da janela de combo ───────────────────────────────────────
-        //
-        // Modo animação: aguarda OnComboWindowOpen vindo da animação.
-        // Modo legado  : abre imediatamente como antes.
-        //
-        // A janela de finisher (comboStep == 3) segue o mesmo caminho —
-        // OnComboWindowOpen no clipe do 3º light sinaliza que o finisher está disponível.
 
         if (type == AttackType.Light)
         {
             bool dashedDuringComboWait = false;
 
-            if (attackDrivenByAnimation)
+            if (attackDrivenByAnimation && stateExists)
             {
                 _animEventComboOpen  = false;
                 _animEventComboClose = false;
@@ -479,13 +502,11 @@ public class MeleeWeapon : MonoBehaviour
                 }
 
                 if (!_animEventComboOpen && !dashedDuringComboWait)
-                    Debug.LogWarning($"[MeleeWeapon] Timeout aguardando OnComboWindowOpen (comboStep={comboStep}). Verifique o Animation Event no clipe.");
+                    Debug.LogWarning($"[MeleeWeapon] Timeout aguardando OnComboWindowOpen (comboStep={comboStep}). Adicione o Animation Event no clipe '{stateName}'.");
             }
 
             if (!dashedDuringComboWait)
             {
-                // Abre a janela — no modo legado abre imediatamente, no modo animação
-                // só chega aqui após o evento (ou timeout de segurança).
                 if (comboStep < 3) { comboWindowOpen    = true; comboWindowTimer    = comboWindowDuration; }
                 else               { finisherWindowOpen = true; finisherWindowTimer = finisherWindowDuration; }
             }
@@ -493,10 +514,8 @@ public class MeleeWeapon : MonoBehaviour
 
         // ── Recovery ──────────────────────────────────────────────────────────
 
-        if (attackDrivenByAnimation)
+        if (attackDrivenByAnimation && stateExists)
         {
-            // Aguarda OnAttackRecoveryEnd ou timeout de segurança.
-            // O dash ainda cancela o recovery como antes.
             _animEventRecoveryEnd = false;
             float elapsed = 0f;
             while (!_animEventRecoveryEnd && elapsed < recoveryEventTimeout)
@@ -507,7 +526,7 @@ public class MeleeWeapon : MonoBehaviour
             }
 
             if (!_animEventRecoveryEnd && !(behavior != null && behavior.IsDashing))
-                Debug.LogWarning($"[MeleeWeapon] Timeout aguardando OnAttackRecoveryEnd ({type}). Verifique o Animation Event no clipe.");
+                Debug.LogWarning($"[MeleeWeapon] Timeout aguardando OnAttackRecoveryEnd ({type}). Adicione o Animation Event no clipe '{stateName}'.");
         }
         else
         {
@@ -526,7 +545,7 @@ public class MeleeWeapon : MonoBehaviour
         if (!isAttacking)
         {
             comboStep = 0;
-            animController?.ForceState("Idle");
+            animController?.ForceState(StateIdle);
         }
     }
 
