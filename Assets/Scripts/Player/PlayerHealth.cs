@@ -1,6 +1,37 @@
 using System.Collections;
 using UnityEngine;
 
+/// <summary>
+/// PlayerHealth — v2: janela de parry e hitbox de dano sincronizadas via Animation Events.
+///
+/// ── COMO FUNCIONA ────────────────────────────────────────────────────────────
+///
+///  PARRY (defesa):
+///   O código NÃO abre mais a janela de parry automaticamente ao pressionar E.
+///   Em vez disso, a animação de defesa tem dois Animation Events:
+///
+///     Frame onde o player entra em posição  → chama  OnParryWindowOpen()
+///     Frame onde a pose de parry termina    → chama  OnParryWindowClose()
+///
+///   Assim a janela é 100% sincronizada com o visual.
+///
+///  HIT (receber dano):
+///   A hitbox de dano dos inimigos já é controlada pelo MeleeWeapon deles,
+///   então não há mudança aqui — mas se quiser adicionar i-frames visuais
+///   também basta chamar EnableHitWindow() / DisableHitWindow() via evento.
+///
+/// ── SETUP NO ANIMATOR ────────────────────────────────────────────────────────
+///
+///   State "DefendStart" (ou o estado de entrada da guarda):
+///     - No frame em que o escudo/braço chega na posição: Animation Event → OnParryWindowOpen
+///     - No último frame do startup / início do loop idle de guarda: Animation Event → OnParryWindowClose
+///       (se quiser parry só no startup; remova esta chamada para parry durante todo o hold)
+///
+///   State "Parry" (animação de sucesso do parry):
+///     - Nenhum evento necessário — disparado pelo código ao receber hit com janela aberta.
+///
+/// ─────────────────────────────────────────────────────────────────────────────
+/// </summary>
 [RequireComponent(typeof(PlayerBehavior))]
 public class PlayerHealth : MonoBehaviour
 {
@@ -11,65 +42,68 @@ public class PlayerHealth : MonoBehaviour
     [SerializeField] private int startingHealth = 5;
 
     [Header("iFrames")]
-    [SerializeField] private float iframeDuration = 0.6f;   // era 0.25 — janela mais generosa após dano
+    [SerializeField] private float iframeDuration = 0.6f;
 
     [Header("Parry")]
-    [SerializeField] private float parryWindowDuration  = 0.20f;  // era 0.35 — janela precisa, exige leitura
-    [SerializeField] private float parryCooldown        = 0.8f;   // era 1.2 — menos punitivo, ritmo mais fluido
-    [SerializeField] private float parryHitStopDuration = 0.28f;  // era 0.22 — freeze mais dramático no parry
+    [Tooltip("Se true, a janela de parry é controlada pelos Animation Events (recomendado).\n" +
+             "Se false, usa o timer legado parryWindowDuration ao pressionar E.")]
+    [SerializeField] private bool  parryDrivenByAnimation = true;
+    [Tooltip("Usado apenas se parryDrivenByAnimation = false (modo legado).")]
+    [SerializeField] private float parryWindowDuration    = 0.20f;
+    [SerializeField] private float parryCooldown          = 0.8f;
+    [SerializeField] private float parryHitStopDuration   = 0.28f;
 
     [Header("Defesa")]
-    [SerializeField] private float maxDefendDuration = 3f;    // era 4 — segura menos tempo, incentiva o parry
+    [SerializeField] private float maxDefendDuration = 3f;
     [Range(0f, 1f)]
-    [SerializeField] private float blockStaminaRatio = 0.9f;  // era 0.8 — bloquear é caro, parry é a resposta
+    [SerializeField] private float blockStaminaRatio = 0.9f;
     [Range(0f, 1f)]
     [SerializeField] private float blockDamageRatio  = 0.2f;
 
     [Header("Guard Crush")]
-    [Tooltip("Se a stamina estiver abaixo deste limiar, ataques pesados quebram a guarda")]
-    [SerializeField] private float guardCrushStaminaThreshold = 35f;  // era 30 — ativa um pouco antes
-    [Tooltip("Dano adicional de knockback X ao sofrer guard crush")]
-    [SerializeField] private float guardCrushKnockbackBonus = 5f;     // era 4
+    [SerializeField] private float guardCrushStaminaThreshold = 35f;
+    [SerializeField] private float guardCrushKnockbackBonus   = 5f;
 
     [Header("Counter Window (pós-parry)")]
-    [Tooltip("Janela de tempo em segundos onde o próximo ataque é um counter")]
-    [SerializeField] private float counterWindowDuration = 0.8f;      // era 0.6 — mais tempo para o player reagir
-    [Tooltip("Multiplicador de dano durante a counter window")]
-    [SerializeField] private float counterDamageMultiplier = 2.5f;    // era 2.2 — counter é devastador
+    [SerializeField] private float counterWindowDuration    = 0.8f;
+    [SerializeField] private float counterDamageMultiplier  = 2.5f;
 
-    [Header("Knockback ao levar dano")]
-    [SerializeField] private float knockbackForceX = 5f;   // era 6 — menos flutuação lateral
-    [SerializeField] private float knockbackForceY = 3f;   // era 2 — mais quique vertical, lê-se melhor
+    [Header("Knockback")]
+    [SerializeField] private float knockbackForceX = 5f;
+    [SerializeField] private float knockbackForceY = 3f;
 
     [Header("Hurt stun")]
-    [Tooltip("Duração do lock de movimento ao levar dano.")]
-    [SerializeField] private float hurtLockDuration = 0.22f;  // era 0.3 — stun menor, player recupera mais rápido
+    [SerializeField] private float hurtLockDuration = 0.22f;
 
-    [Header("Debug Parry")]
+    [Header("Debug")]
     [SerializeField] private bool debugParry = true;
+
+    // ─── Estado ───────────────────────────────────────────────────────────────
 
     private int   currentHealth;
     private bool  isDead;
     private bool  isInvincible;
     private bool  isDefending;
     private bool  parryWindowOpen;
-    private float parryWindowTimer;
+    private float parryWindowTimer;     // usado apenas no modo legado
     private float parryCooldownTimer;
 
-    // Counter window — aberta após parry bem-sucedido
     private bool  _counterWindowOpen;
     private float _counterWindowTimer;
 
     private Transform lastAttackerTransform;
-
     private Coroutine defendCoroutine;
     private Coroutine hurtCoroutine;
+
+    // ─── Componentes ──────────────────────────────────────────────────────────
 
     private PlayerBehavior               behavior;
     private PlayerStamina                stamina;
     private Rigidbody2D                  rb;
     private CharacterAnimationController animController;
     private HitFlash                     hitFlash;
+
+    // ─── Eventos ──────────────────────────────────────────────────────────────
 
     public System.Action<int, int> OnHealthChanged;
     public System.Action           OnDamaged;
@@ -80,6 +114,8 @@ public class PlayerHealth : MonoBehaviour
     public System.Action           OnCounterAttack;
     public System.Action           OnDeath;
 
+    // ─── Propriedades públicas ────────────────────────────────────────────────
+
     public int   CurrentHealth           => currentHealth;
     public int   MaxHealth               => maxHealth;
     public float HealthNormalized        => maxHealth > 0 ? (float)currentHealth / maxHealth : 0f;
@@ -88,6 +124,8 @@ public class PlayerHealth : MonoBehaviour
     public bool  IsDead                  => isDead;
     public bool  IsCounterWindowOpen     => _counterWindowOpen;
     public float CounterDamageMultiplier => counterDamageMultiplier;
+
+    // ─── Unity ────────────────────────────────────────────────────────────────
 
     void Awake()
     {
@@ -102,31 +140,29 @@ public class PlayerHealth : MonoBehaviour
 
     void Start()
     {
-        if (stamina != null)
-            stamina.OnStaminaEmpty += BreakDefend;
+        if (stamina != null) stamina.OnStaminaEmpty += BreakDefend;
     }
 
     void OnDestroy()
     {
-        if (stamina != null)
-            stamina.OnStaminaEmpty -= BreakDefend;
+        if (stamina != null) stamina.OnStaminaEmpty -= BreakDefend;
     }
 
     void Update()
     {
         if (parryCooldownTimer > 0f) parryCooldownTimer -= Time.deltaTime;
 
-        if (parryWindowOpen)
+        // Modo legado: fecha a janela pelo timer
+        if (!parryDrivenByAnimation && parryWindowOpen)
         {
             parryWindowTimer -= Time.deltaTime;
             if (parryWindowTimer <= 0f)
             {
                 parryWindowOpen = false;
-                if (debugParry) Debug.Log("[PARRY] Janela fechou sem hit.");
+                if (debugParry) Debug.Log("[PARRY] Janela fechou por timer (modo legado).");
             }
         }
 
-        // Counter window timer
         if (_counterWindowOpen)
         {
             _counterWindowTimer -= Time.deltaTime;
@@ -137,6 +173,83 @@ public class PlayerHealth : MonoBehaviour
             }
         }
     }
+
+    // ─── Animation Events ─────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Chame via Animation Event no frame em que o player entra em posição de parry.
+    /// </summary>
+    public void OnParryWindowOpen()
+    {
+        if (!isDefending) return;           // segurança: só conta se ainda está defendendo
+        if (parryCooldownTimer > 0f)
+        {
+            if (debugParry) Debug.Log("[PARRY] Animation Event: cooldown ativo — janela bloqueada.");
+            return;
+        }
+
+        parryWindowOpen  = true;
+        parryWindowTimer = parryWindowDuration; // referência para o modo legado; ignorado no modo anim
+        if (debugParry) Debug.Log("[PARRY] Animation Event: janela ABERTA.");
+    }
+
+    /// <summary>
+    /// Chame via Animation Event quando o startup de parry termina.
+    /// Se quiser parry apenas no startup, use este evento.
+    /// Se quiser parry durante todo o hold, não adicione este evento.
+    /// </summary>
+    public void OnParryWindowClose()
+    {
+        if (!parryWindowOpen) return;
+        parryWindowOpen = false;
+        if (debugParry) Debug.Log("[PARRY] Animation Event: janela FECHADA.");
+    }
+
+    // ─── Defesa (input) ───────────────────────────────────────────────────────
+
+    public void StartDefend()
+    {
+        if (isDead || isDefending) return;
+
+        isDefending = true;
+        animController?.SetTriggerDirect("DefendStart");
+        animController?.SetDefending(true);
+
+        defendCoroutine = StartCoroutine(DefendTimeout());
+
+        // Modo legado: abre janela imediatamente pelo timer
+        if (!parryDrivenByAnimation && parryCooldownTimer <= 0f)
+        {
+            parryWindowOpen  = true;
+            parryWindowTimer = parryWindowDuration;
+            if (debugParry) Debug.Log($"[PARRY] Janela aberta por timer legado | {parryWindowDuration}s");
+        }
+        else if (parryDrivenByAnimation)
+        {
+            // A janela será aberta pelo Animation Event OnParryWindowOpen()
+            if (debugParry) Debug.Log("[PARRY] DefendStart — aguardando Animation Event para abrir janela.");
+        }
+    }
+
+    public void StopDefend()
+    {
+        if (!isDefending) return;
+
+        isDefending     = false;
+        parryWindowOpen = false; // fecha a janela ao soltar (evita parry fantasma)
+
+        animController?.SetDefending(false);
+
+        if (defendCoroutine != null)
+        {
+            StopCoroutine(defendCoroutine);
+            defendCoroutine = null;
+        }
+
+        if (debugParry) Debug.Log("[PARRY] Defesa encerrada.");
+    }
+
+    // ─── Dano ─────────────────────────────────────────────────────────────────
 
     public void TakeDamage(int damage, Vector2 sourcePosition = default)
     {
@@ -167,7 +280,6 @@ public class PlayerHealth : MonoBehaviour
 
     public void TakeDamage(int damage) => TakeDamage(damage, default);
 
-    // Chamado por MeleeWeapon para sinalizar se o hit atual é pesado (pode causar guard crush)
     public void TakeDamageHeavy(int damage, Vector2 sourcePosition = default)
     {
         if (isDead) return;
@@ -180,13 +292,8 @@ public class PlayerHealth : MonoBehaviour
 
         if (isDefending)
         {
-            // Guard crush: se stamina está abaixo do limiar, ignora o block
             bool guardCrush = stamina != null && stamina.CurrentStamina < guardCrushStaminaThreshold;
-            if (guardCrush)
-            {
-                ExecuteGuardCrush(damage, sourcePosition);
-                return;
-            }
+            if (guardCrush) { ExecuteGuardCrush(damage, sourcePosition); return; }
             ExecuteBlock(damage, sourcePosition);
             return;
         }
@@ -197,50 +304,8 @@ public class PlayerHealth : MonoBehaviour
         ApplyDamage(damage, sourcePosition);
     }
 
-    public void StartDefend()
-    {
-        if (isDead || isDefending) return;
+    // ─── Counter ──────────────────────────────────────────────────────────────
 
-        isDefending = true;
-
-        // FIX DELAY — usa SetTriggerDirect para transição imediata (sem exit time),
-        // e mantém SetDefending(true) para sustentar o estado Defending no Animator.
-        // Antes apenas o bool era setado, causando 1 frame de delay na transição.
-        animController?.SetTriggerDirect("DefendStart");
-        animController?.SetDefending(true);
-
-        defendCoroutine = StartCoroutine(DefendTimeout());
-
-        if (parryCooldownTimer <= 0f)
-        {
-            parryWindowOpen  = true;
-            parryWindowTimer = parryWindowDuration;
-            if (debugParry) Debug.Log($"[PARRY] Janela aberta | {parryWindowDuration}s");
-        }
-        else
-        {
-            if (debugParry) Debug.Log($"[PARRY] Cooldown ativo ({parryCooldownTimer:F2}s) — só block.");
-        }
-    }
-
-    public void StopDefend()
-    {
-        if (!isDefending) return;
-
-        isDefending = false;
-        animController?.SetDefending(false);
-
-        if (defendCoroutine != null)
-        {
-            StopCoroutine(defendCoroutine);
-            defendCoroutine = null;
-        }
-        // parryWindowOpen NÃO é fechado aqui intencionalmente:
-        // um hit que chegar logo após soltar ainda conta como parry
-        // se ainda estiver dentro da janela.
-    }
-
-    // Consumido por MeleeWeapon.ApplyHit para confirmar o counter e fechar a janela
     public void ConsumeCounterWindow()
     {
         _counterWindowOpen  = false;
@@ -253,6 +318,8 @@ public class PlayerHealth : MonoBehaviour
     {
         lastAttackerTransform = attacker;
     }
+
+    // ─── Internos ─────────────────────────────────────────────────────────────
 
     private void BreakDefend()
     {
@@ -280,14 +347,13 @@ public class PlayerHealth : MonoBehaviour
 
     private void ExecuteGuardCrush(int damage, Vector2 sourcePosition)
     {
-        if (debugParry) Debug.Log("[GUARD CRUSH] Guarda quebrada por ataque pesado com stamina baixa!");
+        if (debugParry) Debug.Log("[GUARD CRUSH] Guarda quebrada!");
 
         StopDefend();
         animController?.SetTriggerDirect("GuardCrush");
         hitFlash?.Flash();
         OnGuardCrush?.Invoke();
 
-        // Aplica dano total com knockback adicional
         currentHealth = Mathf.Max(currentHealth - damage, 0);
         OnHealthChanged?.Invoke(currentHealth, maxHealth);
         OnDamaged?.Invoke();
@@ -297,19 +363,12 @@ public class PlayerHealth : MonoBehaviour
         if (rb != null && sourcePosition != default)
         {
             Vector2 dir   = ((Vector2)transform.position - sourcePosition).normalized;
-            Vector2 force = new Vector2(
-                dir.x * (knockbackForceX + guardCrushKnockbackBonus),
-                knockbackForceY * 1.4f
-            );
+            Vector2 force = new Vector2(dir.x * (knockbackForceX + guardCrushKnockbackBonus), knockbackForceY * 1.4f);
             rb.linearVelocity = Vector2.zero;
             rb.AddForce(force, ForceMode2D.Impulse);
         }
 
-        if (hurtCoroutine != null)
-        {
-            StopCoroutine(hurtCoroutine);
-            behavior.isLocked = false;
-        }
+        if (hurtCoroutine != null) { StopCoroutine(hurtCoroutine); behavior.isLocked = false; }
         hurtCoroutine = StartCoroutine(HurtRoutine());
         StartCoroutine(IFrameRoutine());
     }
@@ -325,14 +384,11 @@ public class PlayerHealth : MonoBehaviour
         hitFlash?.ParryFlash();
         HitStop.Instance?.DoHitStop(parryHitStopDuration);
 
-        // Abre counter window
         _counterWindowOpen  = true;
         _counterWindowTimer = counterWindowDuration;
         if (debugParry) Debug.Log($"[COUNTER] Janela de counter aberta | {counterWindowDuration}s");
 
-        // Zoom de câmera no parry
         CameraImpulse.Instance?.ParryZoom();
-
         OnParrySuccess?.Invoke();
 
         if (lastAttackerTransform != null)
@@ -362,12 +418,7 @@ public class PlayerHealth : MonoBehaviour
             rb.AddForce(force, ForceMode2D.Impulse);
         }
 
-        if (hurtCoroutine != null)
-        {
-            StopCoroutine(hurtCoroutine);
-            behavior.isLocked = false;
-        }
-
+        if (hurtCoroutine != null) { StopCoroutine(hurtCoroutine); behavior.isLocked = false; }
         hurtCoroutine = StartCoroutine(HurtRoutine());
         StartCoroutine(IFrameRoutine());
     }
@@ -376,12 +427,8 @@ public class PlayerHealth : MonoBehaviour
     {
         behavior.isLocked    = true;
         behavior.isAttacking = false;
-
         yield return new WaitForSecondsRealtime(hurtLockDuration);
-
-        if (!isDead)
-            behavior.isLocked = false;
-
+        if (!isDead) behavior.isLocked = false;
         hurtCoroutine = null;
     }
 
@@ -390,14 +437,8 @@ public class PlayerHealth : MonoBehaviour
         if (isDead) return;
         isDead = true;
 
-        if (hurtCoroutine != null)
-        {
-            StopCoroutine(hurtCoroutine);
-            hurtCoroutine = null;
-        }
-
-        if (rb != null)
-            rb.linearVelocity = Vector2.zero;
+        if (hurtCoroutine != null) { StopCoroutine(hurtCoroutine); hurtCoroutine = null; }
+        if (rb != null) rb.linearVelocity = Vector2.zero;
 
         behavior.isLocked = true;
         animController?.SetTriggerDirect("Die");
@@ -418,12 +459,10 @@ public class PlayerHealth : MonoBehaviour
         yield return new WaitForSeconds(maxDefendDuration);
         StopDefend();
     }
-    
+
     public void EnableSpecialInvincible(float duration)
-    {
-        StartCoroutine(SpecialInvincibleRoutine(duration));
-    }
- 
+        => StartCoroutine(SpecialInvincibleRoutine(duration));
+
     private IEnumerator SpecialInvincibleRoutine(float duration)
     {
         isInvincible = true;
