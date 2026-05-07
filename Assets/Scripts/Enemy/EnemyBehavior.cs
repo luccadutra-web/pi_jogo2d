@@ -421,9 +421,10 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
 
         animController?.SetSpeed(0f);
         animController?.TriggerAnimation(TriggerDie);
-        SpecialSystem.Instance?.AddKillEnergy();
+        
 
         StartCoroutine(DeathRoutine());
+        PlayerSpecialGauge.Instance?.AddKill();
     }
 
     private IEnumerator DeathRoutine()

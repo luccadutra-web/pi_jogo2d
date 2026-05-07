@@ -401,6 +401,7 @@ public class PlayerHealth : MonoBehaviour
 
         behavior.isLocked = true;
         animController?.SetTriggerDirect("Die");
+        GetComponent<PlayerSpecial>()?.CancelSpecial();
 
         OnDeath?.Invoke();
     }
@@ -416,6 +417,18 @@ public class PlayerHealth : MonoBehaviour
     {
         yield return new WaitForSeconds(maxDefendDuration);
         StopDefend();
+    }
+    
+    public void EnableSpecialInvincible(float duration)
+    {
+        StartCoroutine(SpecialInvincibleRoutine(duration));
+    }
+ 
+    private IEnumerator SpecialInvincibleRoutine(float duration)
+    {
+        isInvincible = true;
+        yield return new WaitForSeconds(duration);
+        isInvincible = false;
     }
 }
 
