@@ -51,7 +51,14 @@ public class PlayerHealth : MonoBehaviour
     [Tooltip("Usado apenas se parryDrivenByAnimation = false (modo legado).")]
     [SerializeField] private float parryWindowDuration    = 0.20f;
     [SerializeField] private float parryCooldown          = 0.8f;
-    [SerializeField] private float parryHitStopDuration   = 0.28f;
+    [Tooltip("Escala de tempo durante o slow motion do parry (0.05 = quase parado, 0.15 = levemente lento).\n" +
+             "Valores muito baixos são mais dramáticos mas podem parecer exagerados — comece em 0.05.")]
+    [SerializeField] private float parrySlowScale         = 0.05f;
+    [Tooltip("Quanto tempo o slow motion fica no pico antes de voltar ao normal (segundos reais).")]
+    [SerializeField] private float parrySlowHold          = 0.10f;
+    [Tooltip("Quanto tempo leva para o timeScale voltar de slowScale para 1 (segundos reais).\n" +
+             "O ramp up suave é o que dá a sensação de 'respirar' após o parry.")]
+    [SerializeField] private float parrySlowRampUp        = 0.20f;
 
     [Header("Defesa")]
     [SerializeField] private float maxDefendDuration = 3f;
@@ -382,7 +389,12 @@ public class PlayerHealth : MonoBehaviour
 
         animController?.SetTriggerDirect("Parry");
         hitFlash?.ParryFlash();
-        HitStop.Instance?.DoHitStop(parryHitStopDuration);
+
+        // Slow motion em vez de freeze total: o jogador vê o inimigo recuando
+        // em câmera lenta antes do controle ser devolvido — o momento mais
+        // satisfatório do combate. DoSlowMotion já cuida do ramp up suave de
+        // volta a timeScale=1, então não é necessário nenhum cleanup manual.
+        HitStop.Instance?.DoSlowMotion(parrySlowScale, parrySlowHold, parrySlowRampUp);
 
         _counterWindowOpen  = true;
         _counterWindowTimer = counterWindowDuration;

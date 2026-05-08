@@ -1274,8 +1274,8 @@ Transform:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 687937722}
   serializedVersion: 2
-  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 8.58, y: -1.29, z: 0}
+  m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
+  m_LocalPosition: {x: 5.6499996, y: 3.4499996, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -1431,7 +1431,7 @@ GameObject:
   - component: {fileID: 753992977}
   - component: {fileID: 753992976}
   m_Layer: 0
-  m_Name: bg
+  m_Name: Background
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
@@ -2319,7 +2319,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 0
+  m_IsActive: 1
 --- !u!114 &1040475833
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -3633,9 +3633,16 @@ MonoBehaviour:
   finisherRecovery: 0.55
   animEventTimeout: 0.8
   recoveryEventTimeout: 1.2
-  hitlagDuration: 0.15
+  lightHitlagDuration: 0.04
+  heavyHitlagDuration: 0.1
+  finisherHitlagDuration: 0.18
   hitlagVelocityRetention: 0.15
   counterImpactMultiplier: 2
+  lightZoomAmount: 0.02
+  heavyZoomAmount: 0.05
+  finisherZoomAmount: 0.1
+  attackZoomInTime: 0.04
+  attackZoomOutTime: 0.12
   lightPoiseDamage: 20
   heavyPoiseDamage: 45
   finisherPoiseDamage: 999
@@ -3687,9 +3694,11 @@ MonoBehaviour:
   parryZoomAmount: 0.05
   parryZoomInTime: 0.01
   parryZoomOutTime: 0.1
+  parryHoldDuringHitStop: 1
   counterZoomAmount: 0.1
   counterZoomInTime: 0.01
   counterZoomOutTime: 0.05
+  attackZoomMax: 0.03
 --- !u!1 &1741796360
 GameObject:
   m_ObjectHideFlags: 0
@@ -4304,13 +4313,13 @@ RectTransform:
 SceneRoots:
   m_ObjectHideFlags: 0
   m_Roots:
-  - {fileID: 1759602244}
   - {fileID: 619394802}
-  - {fileID: 752126722}
-  - {fileID: 1040475834}
+  - {fileID: 1759602244}
   - {fileID: 1664147568}
   - {fileID: 856340125}
+  - {fileID: 1040475834}
+  - {fileID: 752126722}
   - {fileID: 1570851006}
+  - {fileID: 753992977}
   - {fileID: 215697874}
   - {fileID: 1373329719}
-  - {fileID: 753992977}

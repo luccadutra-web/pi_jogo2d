@@ -33,7 +33,7 @@ using UnityEngine.InputSystem;
 ///
 /// ── HITLAG POR TIPO ───────────────────────────────────────────────────────────
 ///
-///   Light    → lightHitlagDuration   (curto — mantém ritmo do combo)
+///   Light    → lightHitlagPerStep[comboStep-1]  (cresce a cada step: 0.03 → 0.05 → 0.07)
 ///   Heavy    → heavyHitlagDuration   (longo — reforça peso)
 ///   Finisher → finisherHitlagDuration (muito longo — dramático)
 ///   Counter  → 0                     (stagger já cobre o freeze do inimigo)
@@ -77,9 +77,16 @@ public class MeleeWeapon : MonoBehaviour
     [Header("Ataque leve")]
     [SerializeField] private float lightAttackRange = 1.5f;
     [SerializeField] private int lightDamage = 1;
-    [SerializeField] private float lightHitStop = 0.04f;
-    [SerializeField] private float lightShakeIntensity = 0.08f;
-    [SerializeField] private float lightShakeDuration = 0.10f;
+
+    [Header("Ataque leve — progressão por step do combo")]
+    [Tooltip("HitStop por step (step 1, 2, 3). Valores crescentes criam sensação de peso acumulado.")]
+    [SerializeField] private float[] lightHitStopPerStep        = { 0.03f, 0.05f, 0.07f };
+    [Tooltip("Intensidade do camera shake por step.")]
+    [SerializeField] private float[] lightShakeIntensityPerStep = { 0.06f, 0.09f, 0.12f };
+    [Tooltip("Duração do camera shake por step.")]
+    [SerializeField] private float[] lightShakeDurationPerStep  = { 0.12f, 0.14f, 0.16f };
+    [Tooltip("Duração do hitlag no inimigo por step. Step 1 curto mantém ritmo; step 3 reforça peso antes do finisher.")]
+    [SerializeField] private float[] lightHitlagPerStep         = { 0.03f, 0.05f, 0.07f };
 
     [Header("Heavy independente")]
     [SerializeField] private float heavyAttackRange = 2.0f;
@@ -128,8 +135,6 @@ public class MeleeWeapon : MonoBehaviour
     [SerializeField] private float recoveryEventTimeout = 1.2f;
 
     [Header("Hitlag direcional")]
-    [Tooltip("Light: curto para manter o ritmo do combo.")]
-    [SerializeField] private float lightHitlagDuration    = 0.04f;
     [Tooltip("Heavy: longo para reforçar o peso do golpe.")]
     [SerializeField] private float heavyHitlagDuration    = 0.10f;
     [Tooltip("Finisher: máximo — dramático e conclusivo.")]
@@ -138,8 +143,31 @@ public class MeleeWeapon : MonoBehaviour
     [Range(0f, 1f)]
     [SerializeField] private float hitlagVelocityRetention = 0.15f;
 
+    [Header("Knockback pós-hitlag")]
+    [Tooltip("Se true, aplica um impulso de recuo com easing após o freeze do hitlag.\n" +
+             "É o que dá a sensação de 'peso' ao golpe — o inimigo voa e desacelera.")]
+    [SerializeField] private bool knockbackEnabled = true;
+    [Tooltip("Força do knockback por tipo de ataque (unidades/s no frame inicial).")]
+    [SerializeField] private float lightKnockbackForce    = 5f;
+    [SerializeField] private float heavyKnockbackForce    = 10f;
+    [SerializeField] private float finisherKnockbackForce = 16f;
+    [Tooltip("Duração do easing do knockback em segundos. O inimigo desacelera ao longo desse tempo.\n" +
+             "Valores maiores = desliza mais. Sugerido: 0.10–0.18s.")]
+    [SerializeField] private float lightKnockbackDuration    = 0.10f;
+    [SerializeField] private float heavyKnockbackDuration    = 0.14f;
+    [SerializeField] private float finisherKnockbackDuration = 0.18f;
+    [Tooltip("Fração de força vertical adicionada ao knockback (0 = só horizontal, 0.3 = leve pop pra cima).\n" +
+             "Dá a impressão de que o inimigo 'levanta' levemente no impacto.")]
+    [SerializeField] private float knockbackVerticalFraction = 0.2f;
+
     [Header("Counter attack")]
     [SerializeField] private float counterImpactMultiplier = 2f;
+
+    [Header("Camera shake direcional")]
+    [Tooltip("Bias da direção no primeiro frame do shake (0 = randômico puro, 1 = só na direção do golpe).\n" +
+             "0.65 ancora o impacto no espaço sem parecer mecânico. Finisher pode ir até 0.85.")]
+    [Range(0f, 1f)]
+    [SerializeField] private float shakeDirectionBias = 0.65f;
 
     [Header("Micro zoom de câmera por golpe")]
     [Tooltip("Zoom in ao acertar um light attack. 0 = desativado.")]
@@ -157,6 +185,22 @@ public class MeleeWeapon : MonoBehaviour
     [SerializeField] private float lightPoiseDamage = 20f;
     [SerializeField] private float heavyPoiseDamage = 45f;
     [SerializeField] private float finisherPoiseDamage = 999f;
+
+    [Header("Anticipation squash")]
+    [Tooltip("Se true, aplica um squash rápido no sprite do player antes de cada golpe.\n" +
+             "Dá a sensação de que o personagem 'carrega' antes de atacar.")]
+    [SerializeField] private bool anticipationEnabled = true;
+    [Tooltip("Fator de escala X durante o squash (< 1 = comprime). Y é o inverso automático.\n" +
+             "Valores sugeridos: light 0.88 / heavy 0.82 / finisher 0.78.")]
+    [SerializeField] private float lightAnticipationScaleX    = 0.88f;
+    [SerializeField] private float heavyAnticipationScaleX    = 0.82f;
+    [SerializeField] private float finisherAnticipationScaleX = 0.78f;
+    [Tooltip("Duração total do squash (ida + volta) em segundos reais.\n" +
+             "Deve ser menor que o startup do ataque para não sobrepor o hit.\n" +
+             "Sugerido: 0.06s light, 0.09s heavy, 0.10s finisher.")]
+    [SerializeField] private float lightAnticipationDuration    = 0.06f;
+    [SerializeField] private float heavyAnticipationDuration    = 0.09f;
+    [SerializeField] private float finisherAnticipationDuration = 0.10f;
 
     // ─── Estado interno ───────────────────────────────────────────────────────
 
@@ -454,6 +498,15 @@ public class MeleeWeapon : MonoBehaviour
         _currentAttackType = type;
         _currentIsCounter = isCounter;
 
+        // ── Anticipation squash ───────────────────────────────────────────────
+        //
+        // Roda em paralelo com o startup — não usa yield, não bloqueia o fluxo.
+        // O squash dura menos que o startup mais curto (light = 0.06s < 0.08s),
+        // então sempre termina antes do hit. Counter não recebe squash pois a
+        // leitura visual do parry já carrega toda a anticipation necessária.
+        if (anticipationEnabled && !isCounter)
+            StartCoroutine(AnticipationSquash(type));
+
         // ── Detecta se o clipe existe ─────────────────────────────────────────
         //
         // Aguarda 1 frame para o Animator processar o trigger e fazer a transição.
@@ -606,9 +659,13 @@ public class MeleeWeapon : MonoBehaviour
     {
         float range   = type == AttackType.Light ? lightAttackRange   : type == AttackType.Heavy ? heavyAttackRange   : finisherAttackRange;
         int   baseDmg = type == AttackType.Light ? lightDamage        : type == AttackType.Heavy ? heavyDamage        : finisherDamage;
-        float hitStop = type == AttackType.Light ? lightHitStop       : type == AttackType.Heavy ? heavyHitStop       : finisherHitStop;
-        float shakeI  = type == AttackType.Light ? lightShakeIntensity: type == AttackType.Heavy ? heavyShakeIntensity: finisherShakeIntensity;
-        float shakeD  = type == AttackType.Light ? lightShakeDuration : type == AttackType.Heavy ? heavyShakeDuration : finisherShakeDuration;
+
+        // Para light attacks, usa arrays indexados por comboStep para criar progressão de peso.
+        // comboStep vai de 1 a 3; clamp garante segurança se chamado fora de sequência.
+        int   step    = Mathf.Clamp(comboStep - 1, 0, 2);
+        float hitStop = type == AttackType.Light ? lightHitStopPerStep[step]        : type == AttackType.Heavy ? heavyHitStop       : finisherHitStop;
+        float shakeI  = type == AttackType.Light ? lightShakeIntensityPerStep[step] : type == AttackType.Heavy ? heavyShakeIntensity : finisherShakeIntensity;
+        float shakeD  = type == AttackType.Light ? lightShakeDurationPerStep[step]  : type == AttackType.Heavy ? heavyShakeDuration  : finisherShakeDuration;
 
         int   damage     = isCounter ? Mathf.RoundToInt(baseDmg * (health != null ? health.CounterDamageMultiplier : 2f)) : baseDmg;
         float finalStop  = isCounter ? hitStop * counterImpactMultiplier : hitStop;
@@ -617,10 +674,17 @@ public class MeleeWeapon : MonoBehaviour
         Collider2D[] hits = Physics2D.OverlapCircleAll(attackPoint.position, range, enemyLayer);
         if (hits.Length == 0) return;
 
+        // Direção média de todos os inimigos atingidos — usada pelo shake direcional.
+        // Com múltiplos hits simultâneos, a média evita que a câmera favoreça só um deles.
+        Vector2 avgHitDir = Vector2.zero;
+        foreach (Collider2D h in hits)
+            avgHitDir += ((Vector2)h.transform.position - (Vector2)attackPoint.position);
+        if (avgHitDir != Vector2.zero) avgHitDir.Normalize();
+
         // ── 1. Hitlag — freeze do Rigidbody do inimigo ───────────────────────
         // Counter não tem hitlag: o stagger já gerencia o freeze do inimigo.
         float hitlagDur = isCounter ? 0f
-                        : type == AttackType.Light    ? lightHitlagDuration
+                        : type == AttackType.Light    ? lightHitlagPerStep[step]
                         : type == AttackType.Heavy    ? heavyHitlagDuration
                         : finisherHitlagDuration;
 
@@ -628,7 +692,12 @@ public class MeleeWeapon : MonoBehaviour
         {
             Rigidbody2D enemyRb = hit.GetComponent<Rigidbody2D>() ?? hit.GetComponentInParent<Rigidbody2D>();
             if (enemyRb != null && hitlagDur > 0f)
-                StartCoroutine(HitlagRoutine(enemyRb, hitlagDur));
+            {
+                // Direção do knockback: do player para o inimigo, normalizada.
+                // Usa attackPoint como origem para ser mais preciso que transform.position.
+                Vector2 knockDir = ((Vector2)hit.transform.position - (Vector2)attackPoint.position).normalized;
+                StartCoroutine(HitlagRoutine(enemyRb, hitlagDur, knockDir, type));
+            }
 
             // ── 2. ImpactFlash — frame branco no inimigo ─────────────────────
             var hitFlash = hit.GetComponent<HitFlash>() ?? hit.GetComponentInParent<HitFlash>();
@@ -659,7 +728,7 @@ public class MeleeWeapon : MonoBehaviour
         // ── 4. CameraShake — adiado para APÓS o HitStop terminar ─────────────
         // Chamar Shake durante timeScale=0 é invisível: a câmera treme enquanto
         // tudo está congelado. ShakeAfterHitStop aguarda o freeze e só então treme.
-        StartCoroutine(ShakeAfterHitStop(finalShakeI, shakeD));
+        StartCoroutine(ShakeAfterHitStop(finalShakeI, shakeD, avgHitDir, shakeDirectionBias));
 
         // ── 5. CameraImpulse — micro zoom em todos os golpes ─────────────────
         // Counter já chama CounterZoom() em AttackRoutine — não duplica aqui.
@@ -680,22 +749,38 @@ public class MeleeWeapon : MonoBehaviour
     /// Durante timeScale=0 a câmera treme mas o freeze cobre tudo — o player
     /// não vê nada. O shake deve ocorrer quando a imagem volta a se mover.
     /// </summary>
-    private IEnumerator ShakeAfterHitStop(float intensity, float duration)
+    private IEnumerator ShakeAfterHitStop(float intensity, float duration, Vector2 direction, float bias)
     {
         while (HitStop.Instance != null && HitStop.Instance.IsActive)
             yield return new WaitForEndOfFrame();
 
-        CameraShake.Instance?.Shake(intensity, duration);
+        CameraShake.Instance?.Shake(intensity, duration, direction, bias);
     }
 
     // ─── Hitlag ───────────────────────────────────────────────────────────────
 
-    private IEnumerator HitlagRoutine(Rigidbody2D enemyRb, float duration)
+    /// <summary>
+    /// Freeze do Rigidbody do inimigo por <paramref name="duration"/> segundos reais,
+    /// seguido de um impulso de knockback com easing EaseOut quadrático.
+    ///
+    /// ── ORDEM DE EVENTOS ──────────────────────────────────────────────────────
+    ///
+    ///   1. Zera velocidade e gravidade do inimigo (freeze visual limpo)
+    ///   2. Aguarda hitlag duration (WaitForSecondsRealtime — ignora HitStop)
+    ///   3. Restaura gravidade
+    ///   4. Aplica knockback: velocidade inicial alta decaindo em curva EaseOut
+    ///      ao longo de knockbackDuration segundos
+    ///
+    /// O knockback começa APÓS o freeze para que o "pop" seja visível — durante
+    /// timeScale=0 qualquer movimento é invisível de qualquer forma.
+    ///
+    /// <paramref name="knockDir"/> deve ser normalizado (player → inimigo).
+    /// </summary>
+    private IEnumerator HitlagRoutine(Rigidbody2D enemyRb, float duration, Vector2 knockDir, AttackType type)
     {
         if (enemyRb == null) yield break;
 
         float savedGravity = enemyRb.gravityScale;
-        Vector2 savedVel   = enemyRb.linearVelocity;
 
         enemyRb.gravityScale   = 0f;
         enemyRb.linearVelocity = Vector2.zero;
@@ -703,8 +788,101 @@ public class MeleeWeapon : MonoBehaviour
         yield return new WaitForSecondsRealtime(duration);
 
         if (enemyRb == null) yield break;
-        enemyRb.gravityScale   = savedGravity;
-        enemyRb.linearVelocity = savedVel * hitlagVelocityRetention;
+        enemyRb.gravityScale = savedGravity;
+
+        // ── Knockback com easing ──────────────────────────────────────────────
+        if (!knockbackEnabled) yield break;
+
+        float force    = type == AttackType.Light ? lightKnockbackForce
+                       : type == AttackType.Heavy ? heavyKnockbackForce
+                       : finisherKnockbackForce;
+        float kDuration = type == AttackType.Light ? lightKnockbackDuration
+                        : type == AttackType.Heavy ? heavyKnockbackDuration
+                        : finisherKnockbackDuration;
+
+        // Adiciona uma fração vertical para o leve "pop" de levantamento.
+        // knockDir.y já pode ter componente vertical se o inimigo estiver em ângulo;
+        // knockbackVerticalFraction complementa com um boost fixo pra cima.
+        Vector2 knockVec = new Vector2(knockDir.x, knockDir.y + knockbackVerticalFraction).normalized;
+
+        float elapsed = 0f;
+        while (elapsed < kDuration)
+        {
+            if (enemyRb == null) yield break;
+
+            elapsed += Time.deltaTime;
+            float t     = Mathf.Clamp01(elapsed / kDuration);
+            float eased = 1f - (t * t); // EaseOut quadrático: forte no início, suave no fim
+
+            enemyRb.linearVelocity = knockVec * (force * eased);
+            yield return null;
+        }
+
+        if (enemyRb != null)
+            enemyRb.linearVelocity = Vector2.zero;
+    }
+
+    // ─── Anticipation squash ──────────────────────────────────────────────────
+
+    /// <summary>
+    /// Squash rápido no sprite do player antes do hit.
+    /// Comprime X e estica Y proporcionalmente por metade da duração,
+    /// depois retorna ao scale original na outra metade.
+    ///
+    /// Usa WaitForSecondsRealtime para não ser afetado pelo HitStop (timeScale=0).
+    /// O scale original é capturado no início e restaurado no final — seguro
+    /// mesmo se outra coroutine interromper antes do fim.
+    ///
+    /// Chamado em AttackRoutine imediatamente após o trigger da animação,
+    /// rodando em paralelo com a fase de startup (não bloqueia o fluxo principal).
+    /// </summary>
+    private IEnumerator AnticipationSquash(AttackType type)
+    {
+        float scaleX   = type == AttackType.Light ? lightAnticipationScaleX
+                       : type == AttackType.Heavy ? heavyAnticipationScaleX
+                       : finisherAnticipationScaleX;
+        float duration = type == AttackType.Light ? lightAnticipationDuration
+                       : type == AttackType.Heavy ? heavyAnticipationDuration
+                       : finisherAnticipationDuration;
+
+        Transform t    = transform.parent != null ? transform.parent : transform;
+        Vector3 orig   = t.localScale;
+
+        // Mantém o sinal do scale original para sprites flipados (scaleX negativo)
+        float signX  = Mathf.Sign(orig.x);
+        float signY  = Mathf.Sign(orig.y);
+
+        // Calcula o Y inverso para conservar volume aproximado
+        float scaleY = 1f + (1f - scaleX) * 0.6f;
+
+        Vector3 squashed = new Vector3(
+            signX * Mathf.Abs(orig.x) * scaleX,
+            signY * Mathf.Abs(orig.y) * scaleY,
+            orig.z
+        );
+
+        float half = duration * 0.5f;
+        float elapsed = 0f;
+
+        // Ida: orig → squashed
+        while (elapsed < half)
+        {
+            elapsed += Time.unscaledDeltaTime;
+            t.localScale = Vector3.LerpUnclamped(orig, squashed, elapsed / half);
+            yield return null;
+        }
+
+        elapsed = 0f;
+
+        // Volta: squashed → orig
+        while (elapsed < half)
+        {
+            elapsed += Time.unscaledDeltaTime;
+            t.localScale = Vector3.LerpUnclamped(squashed, orig, elapsed / half);
+            yield return null;
+        }
+
+        t.localScale = orig;
     }
 
     // ─── Gizmo ────────────────────────────────────────────────────────────────

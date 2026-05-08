@@ -5,20 +5,23 @@ using TMPro;
 
 /// <summary>
 /// HUD unificado: Vida, Stamina e Gauge do Especial.
+/// A postura (poise) do player e dos inimigos é exibida por PoiseBar,
+/// um componente World Space filho de cada personagem — não passa por aqui.
 ///
-/// HIERARCHY SUGERIDA:
-///  Canvas
-///  └─ HUD (este componente)
+/// HIERARCHY:
+///  Canvas (Screen Space)
+///  └─ HUD
 ///     ├─ Health
 ///     │   ├─ HealthBg
-///     │   └─ HealthFill      ← healthFill   (Image, Filled, Horizontal, Left)
+///     │   ├─ HealthGhostFill  ← healthGhostFill
+///     │   └─ HealthFill       ← healthFill
 ///     ├─ Stamina
 ///     │   ├─ StaminaBg
-///     │   └─ StaminaFill     ← staminaFill  (Image, Filled, Horizontal, Left)
+///     │   └─ StaminaFill      ← staminaFill
 ///     └─ Gauge
 ///         ├─ GaugeBg
-///         ├─ GaugeFill       ← gaugeFill    (Image, Filled, Horizontal, Left)
-///         └─ GaugeText       ← gaugeText    (TextMeshProUGUI, opcional)
+///         ├─ GaugeFill        ← gaugeFill
+///         └─ GaugeText        ← gaugeText
 /// </summary>
 public class PlayerHUD : MonoBehaviour
 {
@@ -29,10 +32,9 @@ public class PlayerHUD : MonoBehaviour
     [SerializeField] private TextMeshProUGUI healthText;
 
     [Header("Animação de dano (vida)")]
-    [Tooltip("Barra fantasma que acompanha a queda da vida com delay")]
-    [SerializeField] private Image  healthGhostFill;
-    [SerializeField] private float  healthGhostDelay  = 0.4f;   // tempo parado antes de começar a cair
-    [SerializeField] private float  healthGhostSpeed  = 1.5f;   // velocidade da queda
+    [SerializeField] private Image healthGhostFill;
+    [SerializeField] private float healthGhostDelay = 0.4f;
+    [SerializeField] private float healthGhostSpeed = 1.5f;
 
     // ─── Stamina ─────────────────────────────────────────────────────────────
 
@@ -57,25 +59,29 @@ public class PlayerHUD : MonoBehaviour
     // ─── Cores da barra de vida ───────────────────────────────────────────────
 
     [Header("Cores — Vida")]
-    [SerializeField] private Color healthColorFull = new Color(0.20f, 0.78f, 0.35f, 1f);  // verde
-    [SerializeField] private Color healthColorMid  = new Color(0.95f, 0.75f, 0.10f, 1f);  // amarelo
-    [SerializeField] private Color healthColorLow  = new Color(0.89f, 0.20f, 0.20f, 1f);  // vermelho
-    [Tooltip("Abaixo deste % a barra fica amarela")]
+    [SerializeField] private Color healthColorFull = new Color(0.20f, 0.78f, 0.35f, 1f);
+    [SerializeField] private Color healthColorMid  = new Color(0.95f, 0.75f, 0.10f, 1f);
+    [SerializeField] private Color healthColorLow  = new Color(0.89f, 0.20f, 0.20f, 1f);
     [SerializeField] private float healthMidThreshold = 0.5f;
-    [Tooltip("Abaixo deste % a barra fica vermelha")]
     [SerializeField] private float healthLowThreshold = 0.25f;
 
-    // ─── Referências de sistema ───────────────────────────────────────────────
+    // ─── Referências ──────────────────────────────────────────────────────────
 
     private PlayerHealth       _health;
     private PlayerStamina      _stamina;
     private PlayerSpecialGauge _gauge;
 
-    // Estado interno da barra fantasma
-    private float      _ghostFill        = 1f;
-    private float      _ghostDelayTimer  = 0f;
-    private bool       _ghostFalling     = false;
-    private Coroutine  _ghostCoroutine;
+    // ─── Ghost bar ────────────────────────────────────────────────────────────
+
+    private float _ghostFill       = 1f;
+    private float _ghostDelayTimer = 0f;
+    private bool  _ghostFalling    = false;
+
+    // ─── Stamina ─────────────────────────────────────────────────────────────
+
+    private Vector3   _staminaParentOriginalScale;
+    private float     _lastStamina = -1f;
+    private Coroutine _staminaPulseCoroutine;
 
     // ─── Unity ───────────────────────────────────────────────────────────────
 
@@ -91,6 +97,10 @@ public class PlayerHUD : MonoBehaviour
 
         SubscribeEvents();
         SyncAll();
+
+        if (staminaFill != null)
+            _staminaParentOriginalScale = staminaFill.transform.parent.localScale;
+        _lastStamina = _stamina != null ? _stamina.CurrentStamina : -1f;
     }
 
     void OnDestroy() => UnsubscribeEvents();
@@ -110,10 +120,8 @@ public class PlayerHUD : MonoBehaviour
             _health.OnDamaged       += HandleDamaged;
             _health.OnDeath         += HandleDeath;
         }
-
         if (_stamina != null)
             _stamina.OnStaminaChanged += HandleStaminaChanged;
-
         if (_gauge != null)
         {
             _gauge.OnGaugeChanged += HandleGaugeChanged;
@@ -129,10 +137,8 @@ public class PlayerHUD : MonoBehaviour
             _health.OnDamaged       -= HandleDamaged;
             _health.OnDeath         -= HandleDeath;
         }
-
         if (_stamina != null)
             _stamina.OnStaminaChanged -= HandleStaminaChanged;
-
         if (_gauge != null)
         {
             _gauge.OnGaugeChanged -= HandleGaugeChanged;
@@ -140,7 +146,7 @@ public class PlayerHUD : MonoBehaviour
         }
     }
 
-    // ─── Sync inicial ────────────────────────────────────────────────────────
+    // ─── Sync inicial ─────────────────────────────────────────────────────────
 
     private void SyncAll()
     {
@@ -153,14 +159,11 @@ public class PlayerHUD : MonoBehaviour
             SetHealthColor(hp);
             SetText(healthText, _health.CurrentHealth, _health.MaxHealth);
         }
-
         if (_stamina != null)
         {
-            float st = _stamina.StaminaNormalized;
-            SetFill(staminaFill, st);
+            SetFill(staminaFill, _stamina.StaminaNormalized);
             SetText(staminaText, Mathf.RoundToInt(_stamina.CurrentStamina), Mathf.RoundToInt(_stamina.MaxStamina));
         }
-
         if (_gauge != null)
         {
             SetFill(gaugeFill, _gauge.GaugeNormalized);
@@ -172,22 +175,15 @@ public class PlayerHUD : MonoBehaviour
 
     private void HandleHealthChanged(int current, int max)
     {
-        float normalized = max > 0 ? (float)current / max : 0f;
-        SetFill(healthFill, normalized);
-        SetHealthColor(normalized);
+        float n = max > 0 ? (float)current / max : 0f;
+        SetFill(healthFill, n);
+        SetHealthColor(n);
         SetText(healthText, current, max);
-
-        // Dispara a barra fantasma
-        if (healthGhostFill != null)
-        {
-            _ghostDelayTimer = healthGhostDelay;
-            _ghostFalling    = false;
-        }
+        if (healthGhostFill != null) { _ghostDelayTimer = healthGhostDelay; _ghostFalling = false; }
     }
 
     private void HandleDamaged()
     {
-        // Pulse na barra de vida ao levar dano
         if (healthFill != null)
             StartCoroutine(PunchScaleRoutine(healthFill.transform.parent, 1.04f, 0.10f));
     }
@@ -203,12 +199,20 @@ public class PlayerHUD : MonoBehaviour
 
     private void HandleStaminaChanged(float current, float max)
     {
-        float normalized = max > 0 ? current / max : 0f;
-        SetFill(staminaFill, normalized);
+        float n = max > 0 ? current / max : 0f;
+        SetFill(staminaFill, n);
         SetText(staminaText, Mathf.RoundToInt(current), Mathf.RoundToInt(max));
 
-        if (staminaFill != null)
-            StartCoroutine(PunchScaleRoutine(staminaFill.transform.parent, staminaPulseScale, staminaPulseDuration));
+        bool spent = _lastStamina >= 0f && current < _lastStamina;
+        _lastStamina = current;
+
+        if (spent && staminaFill != null)
+        {
+            if (_staminaPulseCoroutine != null) StopCoroutine(_staminaPulseCoroutine);
+            staminaFill.transform.parent.localScale = _staminaParentOriginalScale;
+            _staminaPulseCoroutine = StartCoroutine(
+                PunchScaleRoutine(staminaFill.transform.parent, staminaPulseScale, staminaPulseDuration, _staminaParentOriginalScale));
+        }
     }
 
     // ─── Handlers — Gauge ────────────────────────────────────────────────────
@@ -225,25 +229,17 @@ public class PlayerHUD : MonoBehaviour
             StartCoroutine(PunchScaleRoutine(gaugeFill.transform.parent, gaugePulseScale, gaugePulseDuration));
     }
 
-    // ─── Barra fantasma (ghost bar) ───────────────────────────────────────────
+    // ─── Ghost bar ────────────────────────────────────────────────────────────
 
     private void UpdateGhostBar()
     {
         if (healthGhostFill == null || _health == null) return;
-
         float target = _health.HealthNormalized;
 
-        // Se a ghost está acima do valor real, começa a cair após delay
         if (_ghostFill > target)
         {
-            if (_ghostDelayTimer > 0f)
-            {
-                _ghostDelayTimer -= Time.deltaTime;
-            }
-            else
-            {
-                _ghostFalling = true;
-            }
+            if (_ghostDelayTimer > 0f) _ghostDelayTimer -= Time.deltaTime;
+            else _ghostFalling = true;
 
             if (_ghostFalling)
             {
@@ -253,10 +249,7 @@ public class PlayerHUD : MonoBehaviour
         }
         else
         {
-            // Ghost acompanha instantaneamente se vida subir (cura)
-            _ghostFill       = target;
-            _ghostFalling    = false;
-            _ghostDelayTimer = 0f;
+            _ghostFill = target; _ghostFalling = false; _ghostDelayTimer = 0f;
             SetFill(healthGhostFill, _ghostFill);
         }
     }
@@ -287,12 +280,9 @@ public class PlayerHUD : MonoBehaviour
     private void SetHealthColor(float normalized)
     {
         if (healthFill == null) return;
-        if (normalized <= healthLowThreshold)
-            healthFill.color = healthColorLow;
-        else if (normalized <= healthMidThreshold)
-            healthFill.color = healthColorMid;
-        else
-            healthFill.color = healthColorFull;
+        healthFill.color = normalized <= healthLowThreshold ? healthColorLow
+                         : normalized <= healthMidThreshold ? healthColorMid
+                         : healthColorFull;
     }
 
     // ─── Coroutines ──────────────────────────────────────────────────────────
@@ -301,22 +291,20 @@ public class PlayerHUD : MonoBehaviour
     {
         if (target == null) yield break;
         Vector3 original = target.localScale;
-        float half = duration * 0.5f;
-        float t = 0f;
-
-        while (t < half)
-        {
-            t += Time.unscaledDeltaTime;
-            target.localScale = Vector3.LerpUnclamped(original, original * scale, t / half);
-            yield return null;
-        }
+        float half = duration * 0.5f, t = 0f;
+        while (t < half) { t += Time.unscaledDeltaTime; target.localScale = Vector3.LerpUnclamped(original, original * scale, t / half); yield return null; }
         t = 0f;
-        while (t < half)
-        {
-            t += Time.unscaledDeltaTime;
-            target.localScale = Vector3.LerpUnclamped(original * scale, original, t / half);
-            yield return null;
-        }
+        while (t < half) { t += Time.unscaledDeltaTime; target.localScale = Vector3.LerpUnclamped(original * scale, original, t / half); yield return null; }
         target.localScale = original;
+    }
+
+    private IEnumerator PunchScaleRoutine(Transform target, float scale, float duration, Vector3 fixedOriginal)
+    {
+        if (target == null) yield break;
+        float half = duration * 0.5f, t = 0f;
+        while (t < half) { t += Time.unscaledDeltaTime; target.localScale = Vector3.LerpUnclamped(fixedOriginal, fixedOriginal * scale, t / half); yield return null; }
+        t = 0f;
+        while (t < half) { t += Time.unscaledDeltaTime; target.localScale = Vector3.LerpUnclamped(fixedOriginal * scale, fixedOriginal, t / half); yield return null; }
+        target.localScale = fixedOriginal;
     }
 }

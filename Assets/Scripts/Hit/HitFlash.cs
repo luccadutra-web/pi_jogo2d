@@ -35,6 +35,15 @@ public class HitFlash : MonoBehaviour
     [Tooltip("Cor do flash de parry. Ciano/dourado comunicam 'sucesso' melhor que branco.")]
     [SerializeField] private Color parryColor     = new Color(1f, 0.9f, 0.2f); // dourado
 
+    [Header("Flash de quebra de postura")]
+    [Tooltip("Número de piscadas no flash de poise break.")]
+    [SerializeField] private int   poiseBreakFlashCount    = 3;
+    [SerializeField] private float poiseBreakFlashDuration = 0.06f;
+    [Range(0f, 1f)]
+    [SerializeField] private float poiseBreakIntensity     = 0.85f;
+    [Tooltip("Laranja/vermelho comunica 'stagger pesado' e diferencia do flash branco de hit normal.")]
+    [SerializeField] private Color poiseBreakColor         = new Color(1f, 0.35f, 0.05f); // laranja-fogo
+
     private SpriteRenderer _sr;
     private Color          _originalColor;
     private Coroutine      _routine;
@@ -122,6 +131,36 @@ public class HitFlash : MonoBehaviour
             elapsed   += Time.unscaledDeltaTime;
             _sr.color  = Color.Lerp(target, _originalColor, elapsed / fadeTime);
             yield return null;
+        }
+
+        _sr.color = _originalColor;
+        _routine  = null;
+    }
+
+    // ── Quebra de postura ─────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Chame no inimigo dentro de EnemyBehavior.OnPoiseBreak.
+    /// Flash laranja-fogo em múltiplas piscadas — mais intenso e distinto do
+    /// flash branco de hit normal, comunicando claramente que o stagger é pesado.
+    /// </summary>
+    public void PoiseBreakFlash()
+    {
+        if (_routine != null) StopCoroutine(_routine);
+        _routine = StartCoroutine(PoiseBreakFlashRoutine());
+    }
+
+    private IEnumerator PoiseBreakFlashRoutine()
+    {
+        Color target = Color.Lerp(_originalColor, poiseBreakColor, poiseBreakIntensity);
+
+        for (int i = 0; i < poiseBreakFlashCount; i++)
+        {
+            _sr.color = target;
+            yield return new WaitForSecondsRealtime(poiseBreakFlashDuration);
+
+            _sr.color = _originalColor;
+            yield return new WaitForSecondsRealtime(poiseBreakFlashDuration * 0.4f);
         }
 
         _sr.color = _originalColor;

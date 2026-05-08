@@ -1,80 +1,73 @@
 using UnityEngine;
-using UnityEngine.UI;
 
 /// <summary>
-/// Exibe a barra de postura do inimigo sobre ele no mundo.
-/// Aparece ao receber o primeiro hit e some quando a postura está cheia.
+/// PoiseIndicator — componente auxiliar no GameObject do inimigo.
 ///
-/// Setup:
-/// 1. Crie um Canvas (World Space) filho do inimigo.
-/// 2. Adicione um Slider no Canvas e configure como mostrado abaixo.
-/// 3. Adicione este script no GameObject do inimigo.
-/// 4. Arraste o Slider para o campo poiseSlider no Inspector.
+/// Com o HUD centralizado (PlayerHUD), este componente NÃO é necessário
+/// para exibir a barra de postura — o PlayerHUD já escuta os eventos de
+/// EnemyPoise diretamente.
+///
+/// Use este componente SOMENTE se quiser uma barra World Space flutuando
+/// sobre o inimigo (estilo barra de boss). Para isso:
+///   1. Crie um Canvas (World Space) filho do inimigo.
+///   2. Adicione um filho com Image (Filled, Horizontal) dentro do Canvas.
+///   3. Preencha os campos abaixo e ative useWorldSpaceBar = true.
+///
+/// Caso contrário, deixe este script fora da cena — o PlayerHUD cuida de tudo.
 /// </summary>
 public class PoiseIndicator : MonoBehaviour
 {
-    [Header("Referências")]
-    [SerializeField] private Slider poiseSlider;
-    [Tooltip("GameObject pai do canvas de UI (para ativar/desativar).")]
-    [SerializeField] private GameObject uiRoot;
+    [Tooltip("Ative apenas se quiser barra World Space sobre o inimigo além do HUD.")]
+    [SerializeField] private bool useWorldSpaceBar = false;
 
-    [Header("Visibilidade")]
-    [Tooltip("Quanto tempo a barra permanece visível após a última atualização.")]
-    [SerializeField] private float hideDelay = 2.0f;
+    [Header("World Space Bar (opcional)")]
+    [SerializeField] private UnityEngine.UI.Image fillImage;
+    [SerializeField] private GameObject           uiRoot;
+    [SerializeField] private float                hideDelay = 2.0f;
 
     private EnemyPoise _poise;
     private float      _hideTimer;
 
     void Awake()
     {
-        _poise = GetComponent<EnemyPoise>();
-        if (_poise == null)
-        {
-            Debug.LogWarning("[PoiseIndicator] EnemyPoise não encontrado no mesmo GameObject.");
-            return;
-        }
+        if (!useWorldSpaceBar) return;
 
-        _poise.OnPoiseChanged += UpdateBar;
-        _poise.OnPoiseBreak   += OnBreak;
-        _poise.OnPoiseRecover += OnRecover;
+        _poise = GetComponent<EnemyPoise>();
+        if (_poise == null) { Debug.LogWarning("[PoiseIndicator] EnemyPoise não encontrado."); return; }
+
+        _poise.OnPoiseChanged += OnPoiseChanged;
+        _poise.OnPoiseBreak   += OnPoiseBreak;
+        _poise.OnPoiseRecover += OnPoiseRecover;
 
         if (uiRoot != null) uiRoot.SetActive(false);
     }
 
     void OnDestroy()
     {
-        if (_poise == null) return;
-        _poise.OnPoiseChanged -= UpdateBar;
-        _poise.OnPoiseBreak   -= OnBreak;
-        _poise.OnPoiseRecover -= OnRecover;
+        if (!useWorldSpaceBar || _poise == null) return;
+        _poise.OnPoiseChanged -= OnPoiseChanged;
+        _poise.OnPoiseBreak   -= OnPoiseBreak;
+        _poise.OnPoiseRecover -= OnPoiseRecover;
     }
 
     void Update()
     {
-        if (uiRoot == null || !uiRoot.activeSelf) return;
-
+        if (!useWorldSpaceBar || uiRoot == null || !uiRoot.activeSelf) return;
         _hideTimer -= Time.deltaTime;
-        if (_hideTimer <= 0f)
-            uiRoot.SetActive(false);
+        if (_hideTimer <= 0f) uiRoot.SetActive(false);
     }
 
-    private void UpdateBar(float current, float max)
+    private void OnPoiseChanged(float current, float max)
     {
-        if (poiseSlider != null)
-            poiseSlider.value = max > 0f ? current / max : 0f;
-
+        if (fillImage != null) fillImage.fillAmount = max > 0f ? current / max : 0f;
         if (uiRoot != null) uiRoot.SetActive(true);
         _hideTimer = hideDelay;
     }
 
-    private void OnBreak()
+    private void OnPoiseBreak()
     {
-        // Pisca a barra ou muda de cor ao quebrar a postura
         if (uiRoot != null) uiRoot.SetActive(false);
     }
 
-    private void OnRecover()
-    {
-        // Opcional: resetar cor da barra após stagger
-    }
+    private void OnPoiseRecover() { }
 }

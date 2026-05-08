@@ -90,6 +90,7 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
     private Rigidbody2D rb;
     private CharacterAnimationController animController;
     private EnemyPoise poise;
+    private HitFlash   hitFlash;
 
     private bool  _pendingAttack;
     private float _pendingRange;
@@ -103,6 +104,7 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
         rb             = GetComponent<Rigidbody2D>();
         animController = GetComponent<CharacterAnimationController>();
         poise          = GetComponent<EnemyPoise>();
+        hitFlash       = GetComponent<HitFlash>() ?? GetComponentInChildren<HitFlash>();
         currentHealth  = maxHealth;
         rb.freezeRotation = true;
     }
@@ -296,6 +298,11 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
 
         ph.RegisterAttacker(transform);
 
+        // Aplica dano de postura ao player
+        var playerPoise = hit.GetComponent<PlayerPoise>() ?? hit.GetComponentInParent<PlayerPoise>();
+        float poiseDmg = isHeavy ? heavyPoiseDamage : lightPoiseDamage;
+        playerPoise?.ReceivePoiseHit(poiseDmg);
+
         // Ataques pesados do inimigo chamam TakeDamageHeavy para habilitar
         // Guard Crush no player quando a stamina estiver baixa.
         if (isHeavy)
@@ -377,6 +384,8 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
 
         if (heavyTelegraphVFX != null)
             heavyTelegraphVFX.SetActive(false);
+
+        hitFlash?.PoiseBreakFlash();
 
         StopAllCoroutines();
         animController?.ForceState(TriggerStagger);

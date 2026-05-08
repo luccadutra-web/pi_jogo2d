@@ -33,8 +33,9 @@ public class CameraImpulse : MonoBehaviour
     [SerializeField] private float counterZoomAmount  = 0.12f;
     [Tooltip("Duração do zoom in do counter, em segundos.")]
     [SerializeField] private float counterZoomInTime  = 0.05f;
-    [Tooltip("Duração do zoom out do counter, em segundos.")]
-    [SerializeField] private float counterZoomOutTime = 0.18f;
+    [Tooltip("Duração do zoom out do counter, em segundos.\n" +
+             "Deve ser mais longo que o in para o retorno parecer suave e não snappy.")]
+    [SerializeField] private float counterZoomOutTime = 0.32f;
 
     [Header("Attack zoom (light / heavy / finisher)")]
     [Tooltip("Intensidade máxima permitida para golpes normais. Mantenha baixo para não competir com o parry.")]
@@ -102,30 +103,31 @@ public class CameraImpulse : MonoBehaviour
         if (targetSize > startSize)
             targetSize = startSize * (1f - parryZoomAmount * 0.5f);
 
-        // ── Zoom in ───────────────────────────────────────────────────────────
+        // ── Zoom in — EaseOut: entra rápido, desacelera no pico ──────────────
         float t = 0f;
         while (t < parryZoomInTime)
         {
             t += Time.unscaledDeltaTime;
-            targetCamera.orthographicSize = Mathf.Lerp(startSize, targetSize, t / parryZoomInTime);
+            float ease = 1f - Mathf.Pow(1f - Mathf.Clamp01(t / parryZoomInTime), 2f);
+            targetCamera.orthographicSize = Mathf.Lerp(startSize, targetSize, ease);
             yield return null;
         }
         targetCamera.orthographicSize = targetSize;
 
-        // ── Segura no pico enquanto o HitStop estiver ativo ───────────────────
-        // O HitStop congela timeScale mas não unscaledDeltaTime, então a coroutine
-        // avança normalmente. Aguardamos IsActive zerar antes de fazer zoom out —
-        // o jogador vê a tela "travada" no zoom máximo durante todo o freeze.
+        // ── Segura no pico enquanto o slow motion / HitStop estiver ativo ────
+        // Funciona tanto com DoHitStop quanto com DoSlowMotion — IsActive cobre os dois.
         if (parryHoldDuringHitStop)
             while (HitStop.Instance != null && HitStop.Instance.IsActive)
                 yield return null;
 
-        // ── Zoom out lento ────────────────────────────────────────────────────
+        // ── Zoom out — EaseIn: sai devagar, acelera de volta ao normal ────────
+        // O começo lento do zoom out "respira" junto com o fim do slow motion.
         t = 0f;
         while (t < parryZoomOutTime)
         {
             t += Time.unscaledDeltaTime;
-            targetCamera.orthographicSize = Mathf.Lerp(targetSize, _baseSize, t / parryZoomOutTime);
+            float ease = Mathf.Pow(Mathf.Clamp01(t / parryZoomOutTime), 2f);
+            targetCamera.orthographicSize = Mathf.Lerp(targetSize, _baseSize, ease);
             yield return null;
         }
 
@@ -135,31 +137,30 @@ public class CameraImpulse : MonoBehaviour
 
     private IEnumerator ZoomRoutine(float amount, float inTime, float outTime)
     {
-        // Parte do tamanho atual da câmera (pode estar no meio de outro zoom).
         float startSize  = targetCamera.orthographicSize;
         float targetSize = _baseSize * (1f - amount);
 
-        // Se já estamos mais próximos que o target (ex: parry ainda ativo),
-        // usa o menor valor — counter sempre é mais agressivo que parry.
         if (targetSize > startSize)
             targetSize = startSize * (1f - amount * 0.5f);
 
-        // Zoom in (usando tempo real — não pausa com HitStop)
+        // ── Zoom in — EaseOut: entra rápido, desacelera no pico ──────────────
         float t = 0f;
         while (t < inTime)
         {
             t += Time.unscaledDeltaTime;
-            targetCamera.orthographicSize = Mathf.Lerp(startSize, targetSize, t / inTime);
+            float ease = 1f - Mathf.Pow(1f - Mathf.Clamp01(t / inTime), 2f);
+            targetCamera.orthographicSize = Mathf.Lerp(startSize, targetSize, ease);
             yield return null;
         }
         targetCamera.orthographicSize = targetSize;
 
-        // Zoom out sempre retorna ao _baseSize
+        // ── Zoom out — EaseIn: sai devagar, acelera de volta ao normal ────────
         t = 0f;
         while (t < outTime)
         {
             t += Time.unscaledDeltaTime;
-            targetCamera.orthographicSize = Mathf.Lerp(targetSize, _baseSize, t / outTime);
+            float ease = Mathf.Pow(Mathf.Clamp01(t / outTime), 2f);
+            targetCamera.orthographicSize = Mathf.Lerp(targetSize, _baseSize, ease);
             yield return null;
         }
 
