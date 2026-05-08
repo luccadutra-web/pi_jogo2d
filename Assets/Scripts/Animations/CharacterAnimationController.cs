@@ -158,10 +158,26 @@ public class CharacterAnimationController : MonoBehaviour
     public void OnComboWindowClose()   => GetComponent<MeleeWeapon>()?.OnComboWindowClose();
 
     /// <summary>
-    /// Relay dos Animation Events do PlayerHealth (parry).
+    /// Relay dos Animation Events de parry.
+    /// Funciona tanto no Player (PlayerHealth) quanto na Coruja (OwlEnemy).
     /// </summary>
-    public void OnParryWindowOpen()    => GetComponent<PlayerHealth>()?.OnParryWindowOpen();
-    public void OnParryWindowClose()   => GetComponent<PlayerHealth>()?.OnParryWindowClose();
+    public void OnParryWindowOpen()
+    {
+        GetComponent<PlayerHealth>()?.OnParryWindowOpen();
+        GetComponent<OwlEnemy>()?.OnParryWindowOpen();
+    }
+
+    public void OnParryWindowClose()
+    {
+        GetComponent<PlayerHealth>()?.OnParryWindowClose();
+        GetComponent<OwlEnemy>()?.OnParryWindowClose();
+    }
+
+    /// <summary>
+    /// Relay dos Animation Events do OwlEnemy (janela de hit da bicada).
+    /// </summary>
+    public void OnHitWindowOpen()  => GetComponent<OwlEnemy>()?.OnHitWindowOpen();
+    public void OnHitWindowClose() => GetComponent<OwlEnemy>()?.OnHitWindowClose();
 
     private bool HasParameter(string paramName, AnimatorControllerParameterType type)
     {
