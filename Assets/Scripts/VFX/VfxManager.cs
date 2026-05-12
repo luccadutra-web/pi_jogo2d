@@ -64,6 +64,16 @@ public class VfxManager : MonoBehaviour
     [Tooltip("Prefab do trail para o finisher.")]
     [SerializeField] private GameObject slashTrailFinisherPrefab;
 
+    [Header("Slash Sprites")]
+    [Tooltip("Prefab do sprite de slash para ataque leve (SlashSprite + SpriteRenderer Additive).")]
+    [SerializeField] private GameObject slashSpriteLightPrefab;
+
+    [Tooltip("Prefab do sprite de slash para ataque pesado.")]
+    [SerializeField] private GameObject slashSpriteHeavyPrefab;
+
+    [Tooltip("Prefab do sprite de slash para o finisher.")]
+    [SerializeField] private GameObject slashSpritefinisherPrefab;
+
     // ── Hit Impacts ───────────────────────────────────────────────────────────
 
     [Header("Hit Impacts")]
@@ -99,6 +109,23 @@ public class VfxManager : MonoBehaviour
 
     [Tooltip("Burst de partículas de poise break.")]
     [SerializeField] private GameObject poiseBreakFxPrefab;
+
+    [Header("Blood Particles")]
+    [Tooltip("Particle System de sangue para golpe LEVE (blood2).\n" +
+             "Precisa ter Shader Additive para o fundo preto desaparecer.")]
+    [SerializeField] private GameObject bloodLightPrefab;
+
+    [Tooltip("Particle System de sangue para golpe PESADO (blood_heavy).")]
+    [SerializeField] private GameObject bloodHeavyPrefab;
+
+    [Tooltip("Offset LOCAL padrão do ponto de spawn do sangue para golpe leve.\n" +
+             "Relativo à posição do inimigo. Sobrescrito por BloodHitOffset no prefab do inimigo.\n\n" +
+             "Ex: (0, 0.3) sobe o efeito para o centro do sprite.")]
+    [SerializeField] private Vector2 bloodLightOffset = new Vector2(0f, 0.3f);
+
+    [Tooltip("Offset LOCAL padrão para golpe pesado.\n" +
+             "Sobrescrito por BloodHitOffset no prefab do inimigo.")]
+    [SerializeField] private Vector2 bloodHeavyOffset = new Vector2(0f, 0.3f);
 
     [Header("Player Feedback")]
     [Tooltip("Burst de poeira no pé do player ao executar parry bem-sucedido.")]
@@ -141,6 +168,9 @@ public class VfxManager : MonoBehaviour
         PrewarmPool(slashTrailLightPrefab,    poolSize);
         PrewarmPool(slashTrailHeavyPrefab,    poolSize);
         PrewarmPool(slashTrailFinisherPrefab, poolSize);
+        PrewarmPool(slashSpriteLightPrefab,    poolSize);
+        PrewarmPool(slashSpriteHeavyPrefab,    poolSize);
+        PrewarmPool(slashSpritefinisherPrefab, poolSize);
         PrewarmPool(hitImpactLightPrefab,     poolSize);
         PrewarmPool(hitImpactHeavyPrefab,     poolSize);
         PrewarmPool(hitImpactFinisherPrefab,  poolSize);
@@ -150,6 +180,8 @@ public class VfxManager : MonoBehaviour
         PrewarmPool(enemyHurtFxPrefab,        poolSize);
         PrewarmPool(poiseBreakFxPrefab,       poolSize / 2);
         PrewarmPool(dustParryFxPrefab,        poolSize / 2);
+        PrewarmPool(bloodLightPrefab,         poolSize);
+        PrewarmPool(bloodHeavyPrefab,         poolSize);
     }
 
     // ── API pública — Slash Trails ────────────────────────────────────────────
@@ -196,6 +228,59 @@ public class VfxManager : MonoBehaviour
         // Desancora: SlashTrail detecta OnTransformParentChanged e inicia fade
         _activeTrail.transform.SetParent(transform, true);
         _activeTrail = null;
+    }
+
+    /// <summary>
+    /// Spawna e ancora um sprite de slash ao transform da arma.
+    /// Complementa o SpawnSlashTrail — use um ou ambos dependendo do visual.
+    ///
+    /// O sprite segue o attackPoint durante o active e faz fade out
+    /// automaticamente ao ser desancorado (ReturnActiveTrail).
+    ///
+    /// Cor e escala sao configuradas por tipo antes do Enable para
+    /// reutilizar corretamente os objetos do pool.
+    /// </summary>
+    /// <param name="type">"light", "heavy" ou "finisher"</param>
+    /// <param name="weaponTransform">Transform ao qual o sprite sera ancorado.</param>
+    public void SpawnSlashSprite(string type, Transform weaponTransform)
+    {
+        GameObject prefab = SelectSlashSpritePrefab(type);
+        if (prefab == null) return;
+
+        GameObject instance = GetFromPool(prefab);
+        if (instance == null) return;
+
+        // Configura cor e escala ANTES de ancorar e ativar,
+        // para que OnEnable ja leia os valores corretos.
+        SlashSprite slashSprite = instance.GetComponent<SlashSprite>();
+        if (slashSprite != null)
+        {
+            switch (type)
+            {
+                case "heavy":
+                    slashSprite.SetColor(new Color(1f, 0.85f, 0.6f)); // laranja claro
+                    slashSprite.SetScale(0.9f);
+                    break;
+                case "finisher":
+                    slashSprite.SetColor(new Color(1f, 0.95f, 0.5f)); // dourado
+                    slashSprite.SetScale(1.3f);
+                    break;
+                default: // light
+                    slashSprite.SetColor(Color.white);
+                    slashSprite.SetScale(0.6f);
+                    break;
+            }
+        }
+
+        // Ancora ao weapon transform — igual ao SlashTrail
+        instance.transform.SetParent(weaponTransform, false);
+        instance.transform.localPosition = Vector3.zero;
+        instance.transform.localRotation = Quaternion.identity;
+
+        instance.SetActive(true);
+
+        // Reutiliza o mesmo timer de fade do SlashTrail para devolver ao pool
+        StartCoroutine(ReturnSpriteAfterFade(instance, prefab));
     }
 
     // ── API pública — Hit Impacts ─────────────────────────────────────────────
@@ -308,7 +393,94 @@ public class VfxManager : MonoBehaviour
     }
 
     /// <summary>
-    /// Spawna burst de poeira no pé do player ao executar parry.
+    /// Spawna partículas de sangue no inimigo atingido.
+    ///
+    /// A posição final é calculada assim (mesma lógica do parryFxOffset):
+    ///   1. Se o inimigo tem BloodHitOffset → usa o offset LOCAL configurado nele.
+    ///   2. Caso contrário → usa o offset padrão do Inspector (bloodLightOffset /
+    ///      bloodHeavyOffset), também em espaço LOCAL do inimigo.
+    ///
+    /// Usar espaço LOCAL garante que o efeito acompanha flipX e escala do sprite
+    /// automaticamente — crítico para novos inimigos sem ajuste manual.
+    /// </summary>
+    /// <param name="hitTarget">Transform do inimigo atingido.</param>
+    /// <param name="isHeavy">Se true usa o prefab/offset de golpe pesado.</param>
+    /// <param name="hitDirection">Direção do golpe (player → inimigo) para rotacionar o efeito.</param>
+    public void SpawnBlood(Transform hitTarget, bool isHeavy, Vector2 hitDirection = default)
+    {
+        GameObject prefab = isHeavy ? bloodHeavyPrefab : bloodLightPrefab;
+        if (prefab == null) return;
+
+        GameObject instance = GetFromPool(prefab);
+        if (instance == null) return;
+
+        // ── Resolve posição com offset ────────────────────────────────────────
+        //
+        // Prioridade:
+        //   1. BloodHitOffset no inimigo (offset personalizado por tipo de inimigo)
+        //   2. Offset padrão do Inspector (fallback global)
+        //
+        // TransformPoint converte LOCAL → WORLD respeitando
+        // rotação, escala e flipX do inimigo — igual ao que parryFxOffset faz.
+        Vector3 spawnPos;
+        if (hitTarget != null)
+        {
+            BloodHitOffset bloodOffset = hitTarget.GetComponentInChildren<BloodHitOffset>();
+            Vector2 localOffset = bloodOffset != null
+                ? (isHeavy ? bloodOffset.HeavyOffset : bloodOffset.LightOffset)
+                : (isHeavy ? bloodHeavyOffset         : bloodLightOffset);
+
+            spawnPos = hitTarget.TransformPoint(new Vector3(localOffset.x, localOffset.y, 0f));
+        }
+        else
+        {
+            Vector2 fallback = isHeavy ? bloodHeavyOffset : bloodLightOffset;
+            spawnPos = (Vector3)fallback;
+        }
+
+        instance.transform.SetParent(null);
+        instance.transform.position = spawnPos;
+
+        // Rotaciona o efeito na direção do golpe (mesmo padrão do SpawnHitImpact)
+        if (hitDirection != Vector2.zero)
+        {
+            float angle = Mathf.Atan2(hitDirection.y, hitDirection.x) * Mathf.Rad2Deg;
+            instance.transform.rotation = Quaternion.Euler(0f, 0f, angle);
+        }
+
+        instance.SetActive(true);
+
+        // ── Escala por inimigo via startSizeMultiplier ────────────────────────
+        //
+        // startSizeMultiplier escala o tamanho das particulas sem modificar
+        // os valores base do prefab — seguro para objetos reutilizados do pool.
+        // Cada instancia recebe o multiplicador certo antes do Play().
+        //
+        // Prioridade:
+        //   1. BloodHitOffset.LightScale / HeavyScale no inimigo
+        //   2. Escala 1.0 (tamanho padrao do prefab) como fallback
+        float scale = 1f;
+        if (hitTarget != null)
+        {
+            BloodHitOffset bloodOffset = hitTarget.GetComponentInChildren<BloodHitOffset>();
+            if (bloodOffset != null)
+                scale = isHeavy ? bloodOffset.HeavyScale : bloodOffset.LightScale;
+        }
+
+        // Aplica escala e da Play() em todos os ParticleSystems do efeito
+        foreach (var ps in instance.GetComponentsInChildren<ParticleSystem>())
+        {
+            var main = ps.main;
+            main.startSizeMultiplier = scale;
+            ps.Clear();
+            ps.Play();
+        }
+
+        EnsureAutoReturn(instance, prefab, defaultLifetime);
+    }
+
+    /// <summary>
+    /// Spawna burst de poeira no pe do player ao executar parry.
     /// O offset X é espelhado automaticamente conforme o facing.
     /// </summary>
     /// <param name="position">Posição do centro do player.</param>
@@ -369,6 +541,13 @@ public class VfxManager : MonoBehaviour
         "finisher" => hitImpactFinisherPrefab,
         "counter"  => hitImpactCounterPrefab,
         _          => hitImpactLightPrefab,
+    };
+
+    private GameObject SelectSlashSpritePrefab(string type) => type switch
+    {
+        "heavy"    => slashSpriteHeavyPrefab,
+        "finisher" => slashSpritefinisherPrefab,
+        _          => slashSpriteLightPrefab,
     };
 
     // ── Pool ──────────────────────────────────────────────────────────────────
@@ -433,6 +612,17 @@ public class VfxManager : MonoBehaviour
 
     // Aguarda o trail terminar o fade antes de devolver ao pool
     private IEnumerator ReturnTrailAfterFade(GameObject instance, GameObject prefab)
+    {
+        yield return new WaitForSeconds(defaultLifetime);
+
+        if (instance != null && instance.activeInHierarchy)
+            ReturnToPool(instance, prefab);
+    }
+
+    // Aguarda o sprite de slash terminar o fade antes de devolver ao pool.
+    // Usa o mesmo defaultLifetime do trail — ajuste se o fadeOutDuration
+    // do SlashSprite for muito diferente.
+    private IEnumerator ReturnSpriteAfterFade(GameObject instance, GameObject prefab)
     {
         yield return new WaitForSeconds(defaultLifetime);
 

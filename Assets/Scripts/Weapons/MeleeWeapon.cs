@@ -117,25 +117,25 @@ public class MeleeWeapon : MonoBehaviour
 
     [Header("Timings — usados no modo legado e como fallback de segurança")]
     [Tooltip("Startup: tempo até o hit (usado no modo legado)")]
-    [SerializeField] private float lightStartup = 0.08f;
-    [SerializeField] private float lightActiveTime = 0.08f;
-    [SerializeField] private float lightRecovery = 0.18f;
-    [SerializeField] private float heavyStartup = 0.20f;
-    [SerializeField] private float heavyActiveTime = 0.12f;
-    [SerializeField] private float heavyRecovery = 0.40f;
-    [SerializeField] private float finisherStartup = 0.28f;
-    [SerializeField] private float finisherActiveTime = 0.15f;
-    [SerializeField] private float finisherRecovery = 0.55f;
+    [SerializeField] private float lightStartup    = 0.20f;
+    [SerializeField] private float lightActiveTime = 0.12f;
+    [SerializeField] private float lightRecovery   = 0.32f;
+    [SerializeField] private float heavyStartup    = 0.32f;
+    [SerializeField] private float heavyActiveTime = 0.15f;
+    [SerializeField] private float heavyRecovery   = 0.55f;
+    [SerializeField] private float finisherStartup    = 0.40f;
+    [SerializeField] private float finisherActiveTime = 0.18f;
+    [SerializeField] private float finisherRecovery   = 0.70f;
 
     [Header("Fallback — modo animação")]
     [Tooltip("Tempo máximo de espera pelo Animation Event OnAttackActiveStart.\n" +
              "Se a animação não disparar o evento nesse tempo, o hit é aplicado assim mesmo.\n" +
-             "Deve ser maior que o startup mais longo (finisher = ~0.28s). Recomendado: 0.6s.")]
-    [SerializeField] private float animEventTimeout = 0.6f;
+             "Deve ser maior que o startup mais longo (finisher = ~0.40s). Recomendado: 0.8s.")]
+    [SerializeField] private float animEventTimeout = 0.8f;
     [Tooltip("Tempo máximo de espera pelo Animation Event OnAttackRecoveryEnd.\n" +
              "Se não vier, encerra o recovery com base no timer de fallback (recovery + margem).\n" +
-             "Recomendado: maior que o recovery mais longo (finisher = ~0.55s). Recomendado: 1.2s.")]
-    [SerializeField] private float recoveryEventTimeout = 1.2f;
+             "Recomendado: maior que o recovery mais longo (finisher = ~0.70s). Recomendado: 1.5s.")]
+    [SerializeField] private float recoveryEventTimeout = 1.5f;
 
     [Header("Hitlag direcional")]
     [Tooltip("Heavy: longo para reforçar o peso do golpe.")]
@@ -165,6 +165,14 @@ public class MeleeWeapon : MonoBehaviour
 
     [Header("Counter attack")]
     [SerializeField] private float counterImpactMultiplier = 2f;
+    [SerializeField] private float counterKnockbackForce    = 18f;
+    [SerializeField] private float counterKnockbackDuration = 0.20f;
+    [Tooltip("Escala de tempo durante o slow motion do counter (0.05 = quase parado).\nValor sugerido: igual ou ligeiramente mais alto que o parry (0.08).")]
+    [SerializeField] private float counterSlowScale    = 0.08f;
+    [Tooltip("Duração do slow motion em tempo real antes do ramp up.")]
+    [SerializeField] private float counterSlowHold     = 0.12f;
+    [Tooltip("Duração do ramp up suave de volta a timeScale=1.")]
+    [SerializeField] private float counterSlowRampUp   = 0.20f;
 
     [Header("Camera shake direcional")]
     [Tooltip("Bias da direção no primeiro frame do shake (0 = randômico puro, 1 = só na direção do golpe).\n" +
@@ -185,9 +193,10 @@ public class MeleeWeapon : MonoBehaviour
     [SerializeField] private float attackZoomOutTime  = 0.12f;
 
     [Header("Dano de postura (Poise)")]
-    [SerializeField] private float lightPoiseDamage = 20f;
-    [SerializeField] private float heavyPoiseDamage = 45f;
-    [SerializeField] private float finisherPoiseDamage = 999f;
+    [Tooltip("Sistema de poise desabilitado. Reative poiseEnabled em EnemyPoise para usar.")]
+    [HideInInspector] [SerializeField] private float lightPoiseDamage    = 20f;
+    [HideInInspector] [SerializeField] private float heavyPoiseDamage    = 45f;
+    [HideInInspector] [SerializeField] private float finisherPoiseDamage = 999f;
 
     [Header("Anticipation squash")]
     [Tooltip("Se true, aplica um squash rápido no sprite do player antes de cada golpe.\n" +
@@ -211,6 +220,7 @@ public class MeleeWeapon : MonoBehaviour
 
     private int comboStep = 0;
     private bool isAttacking = false;
+    private Coroutine _attackCoroutine;
     private bool comboWindowOpen = false;
     private bool finisherWindowOpen = false;
     private float comboWindowTimer;
@@ -441,7 +451,7 @@ public class MeleeWeapon : MonoBehaviour
     {
         comboStep++;
         _justStartedAttack = true;
-        StartCoroutine(AttackRoutine(AttackType.Light));
+        StartAttackRoutine(AttackType.Light);
     }
 
     private void ExecuteHeavyAttack()
@@ -449,7 +459,7 @@ public class MeleeWeapon : MonoBehaviour
         if (stamina != null && !stamina.Spend(heavyStaminaCost)) return;
         heavyCooldownTimer = heavyCooldown;
         _justStartedAttack = true;
-        StartCoroutine(AttackRoutine(AttackType.Heavy));
+        StartAttackRoutine(AttackType.Heavy);
     }
 
     private void ExecuteFinisher()
@@ -457,7 +467,32 @@ public class MeleeWeapon : MonoBehaviour
         if (stamina != null && !stamina.Spend(finisherStaminaCost)) { comboStep = 0; return; }
         comboStep = 0;
         _justStartedAttack = true;
-        StartCoroutine(AttackRoutine(AttackType.Finisher));
+        StartAttackRoutine(AttackType.Finisher);
+    }
+
+    private void StartAttackRoutine(AttackType type)
+    {
+        // Cancela a coroutine anterior apenas se ainda estiver na fase startup/active —
+        // ou seja, se isAttacking ainda for true. Durante a janela de combo e recovery
+        // isAttacking já é false: o buffer cuida da transição e não deve haver cancelamento,
+        // pois isso cortaria a animação de recovery visualmente.
+        if (_attackCoroutine != null && isAttacking)
+        {
+            StopCoroutine(_attackCoroutine);
+            // Reseta flags de Animation Events que a rotina anterior deixaria sujas
+            _animEventActiveStart = false;
+            _animEventActiveEnd   = false;
+            _animEventComboOpen   = false;
+            _animEventComboClose  = false;
+            _animEventRecoveryEnd = false;
+            if (behavior != null)
+            {
+                behavior.isAttacking               = false;
+                behavior.isInAttackStartupOrActive = false;
+            }
+            vfxManager?.ReturnActiveTrail();
+        }
+        _attackCoroutine = StartCoroutine(AttackRoutine(type));
     }
 
     // ─── Rotina de ataque ─────────────────────────────────────────────────────
@@ -486,11 +521,20 @@ public class MeleeWeapon : MonoBehaviour
         bool isCounter = health != null && health.IsCounterWindowOpen;
         if (isCounter)
         {
-            // Sem animação de counter dedicada — reutiliza o heavy attack.
-            // O dano e os efeitos de impacto ainda aplicam o multiplicador de counter.
-            animController?.SetTriggerDirect(TriggerHeavy);
+            // Slow motion antes do trigger — igual ao parry, dá tempo do jogador
+            // sentir o momento antes do golpe sair. DoSlowMotion usa WaitForSecondsRealtime
+            // internamente, então não é afetado pelo timeScale alterado.
+            HitStop.Instance?.DoSlowMotion(counterSlowScale, counterSlowHold, counterSlowRampUp);
+
+            // Aguarda o slow motion terminar completamente antes de disparar a animação
+            // e checar os Animation Events — caso contrário, ActiveStart dispara durante
+            // o slow-mo e o knockback sai antes do contato visual.
+            float slowTotal = counterSlowHold + counterSlowRampUp;
+            yield return new WaitForSecondsRealtime(slowTotal);
+
+            animController?.SetTriggerDirect(TriggerCounter);
             CameraImpulse.Instance?.CounterZoom();
-            stateName = StateHeavy;
+            stateName = StateCounter;
         }
         else
             animController?.SetTriggerDirect(trigger);
@@ -499,7 +543,14 @@ public class MeleeWeapon : MonoBehaviour
         string trailType = type == AttackType.Heavy ? "heavy"
                          : type == AttackType.Finisher ? "finisher"
                          : "light";
-        vfxManager?.SpawnSlashTrail(trailType, attackPoint != null ? attackPoint : transform, comboStep);
+        if (!isCounter)
+        {
+            vfxManager?.SpawnSlashTrail(trailType, attackPoint != null ? attackPoint : transform, comboStep);
+
+            // Sprite de slash ancorado na arma — complementa o TrailRenderer.
+            // Ambos usam ReturnActiveTrail() para desancorar no fim do active.
+            vfxManager?.SpawnSlashSprite(trailType, attackPoint != null ? attackPoint : transform);
+        }
         if (behavior != null)
         {
             behavior.isAttacking = true;
@@ -550,12 +601,20 @@ public class MeleeWeapon : MonoBehaviour
             yield return new WaitForSecondsRealtime(startup);
         }
 
-        // ── Fase Active: aplica o hit ─────────────────────────────────────────
+        // ── Fase Active ───────────────────────────────────────────────────────
+        //
+        // Ataques normais: ApplyHit logo em OnAttackActiveStart — a hitbox abre
+        // no primeiro frame do active, comportamento padrão de beat-em-up.
+        //
+        // Counter: o contato visual (pé/punho chegando no inimigo) acontece perto
+        // do fim da janela ativa, não no início. Por isso adiamos o ApplyHit para
+        // OnAttackActiveEnd, garantindo que o knockback só ocorra após o impacto
+        // ser visível na tela.
 
-        ApplyHit(type, isCounter);
-
-        if (isCounter && health != null)
-            health.ConsumeCounterWindow();
+        if (!isCounter)
+        {
+            ApplyHit(type, isCounter);
+        }
 
         // ── Fim do Active ─────────────────────────────────────────────────────
 
@@ -572,6 +631,13 @@ public class MeleeWeapon : MonoBehaviour
         else
         {
             yield return new WaitForSecondsRealtime(activeTime);
+        }
+
+        // Counter aplica o hit aqui — após o contato visual
+        if (isCounter)
+        {
+            ApplyHit(type, isCounter);
+            health?.ConsumeCounterWindow();
         }
 
         // Aguarda o HitStop terminar antes de liberar o movimento do player.
@@ -655,6 +721,7 @@ public class MeleeWeapon : MonoBehaviour
         }
 
         isAttacking = false;
+        _attackCoroutine = null;
         TryConsumeBuffer();
 
         if (!isAttacking)
@@ -710,6 +777,18 @@ public class MeleeWeapon : MonoBehaviour
                 StartCoroutine(HitlagRoutine(enemyRb, hitlagDur, knockDir, type));
             }
 
+            // ── Knockback do counter — direto, sem hitlag ─────────────────────
+            if (isCounter)
+            {
+                Rigidbody2D counterRb = hit.GetComponent<Rigidbody2D>() ?? hit.GetComponentInParent<Rigidbody2D>();
+                if (counterRb != null)
+                {
+                    Vector2 cKnockDir = ((Vector2)hit.transform.position - (Vector2)transform.position).normalized;
+                    Vector2 cKnockVec = new Vector2(cKnockDir.x, cKnockDir.y + knockbackVerticalFraction).normalized;
+                    StartCoroutine(CounterKnockbackRoutine(counterRb, cKnockVec));
+                }
+            }
+
             // ── 2. ImpactFlash — frame branco no inimigo ─────────────────────
             var hitFlash = hit.GetComponent<HitFlash>() ?? hit.GetComponentInParent<HitFlash>();
             hitFlash?.ImpactFlash();
@@ -722,6 +801,13 @@ public class MeleeWeapon : MonoBehaviour
             Vector2 hitPos = hit.transform.position;
             Vector2 hitDir = ((Vector2)hit.transform.position - (Vector2)attackPoint.position).normalized;
             vfxManager?.SpawnHitImpact(impactType, hitPos, hitDir, isCounter, comboStep);
+
+            // Sangue — desabilitado no counter (usa VFX de impacto próprio)
+            if (!isCounter)
+            {
+                bool isHeavyHit = type == AttackType.Heavy || type == AttackType.Finisher;
+                vfxManager?.SpawnBlood(hit.transform, isHeavyHit, hitDir);
+            }
 
             // ── Dano e poise ──────────────────────────────────────────────────
             if (type == AttackType.Heavy)
@@ -796,6 +882,31 @@ public class MeleeWeapon : MonoBehaviour
     ///
     /// <paramref name="knockDir"/> deve ser normalizado (player → inimigo).
     /// </summary>
+    /// <summary>
+    /// Knockback exclusivo do counter — sem freeze prévio (hitlag = 0 no counter).
+    /// Aplica impulso com easing EaseOut quadrático, mesmo padrão do HitlagRoutine.
+    /// </summary>
+    private IEnumerator CounterKnockbackRoutine(Rigidbody2D enemyRb, Vector2 knockVec)
+    {
+        if (enemyRb == null) yield break;
+
+        float elapsed = 0f;
+        while (elapsed < counterKnockbackDuration)
+        {
+            if (enemyRb == null) yield break;
+
+            elapsed += Time.deltaTime;
+            float t     = Mathf.Clamp01(elapsed / counterKnockbackDuration);
+            float eased = 1f - (t * t); // EaseOut quadrático: forte no início, suave no fim
+
+            enemyRb.linearVelocity = knockVec * (counterKnockbackForce * eased);
+            yield return null;
+        }
+
+        if (enemyRb != null)
+            enemyRb.linearVelocity = Vector2.zero;
+    }
+
     private IEnumerator HitlagRoutine(Rigidbody2D enemyRb, float duration, Vector2 knockDir, AttackType type)
     {
         if (enemyRb == null) yield break;

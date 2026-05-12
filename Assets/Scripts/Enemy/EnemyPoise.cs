@@ -15,6 +15,10 @@ using UnityEngine;
 /// </summary>
 public class EnemyPoise : MonoBehaviour
 {
+    [Header("Sistema")]
+    [Tooltip("Desative para suspender o poise sem remover o componente. Reative a qualquer momento.")]
+    [SerializeField] private bool poiseEnabled = false;
+
     [Header("Postura")]
     [Tooltip("Postura máxima. Valores maiores = inimigo mais resistente a stagger.")]
     [SerializeField] private float maxPoise         = 100f;
@@ -55,7 +59,8 @@ public class EnemyPoise : MonoBehaviour
 
     void Update()
     {
-        if (_isStaggered) return;
+        if (!poiseEnabled)    return;
+        if (_isStaggered)     return;
         if (_currentPoise >= maxPoise) return;
 
         if (_regenTimer > 0f)
@@ -74,7 +79,8 @@ public class EnemyPoise : MonoBehaviour
     /// </summary>
     public void ReceivePoiseHit(float poiseDamage)
     {
-        if (_isStaggered) return;
+        if (!poiseEnabled)  return;
+        if (_isStaggered)   return;
 
         _currentPoise -= poiseDamage;
         _regenTimer    = poiseRegenDelay;
