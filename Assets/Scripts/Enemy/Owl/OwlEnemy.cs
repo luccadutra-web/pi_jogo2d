@@ -422,6 +422,7 @@ public class OwlEnemy : MonoBehaviour, IDamageable, IStaggerable
         Log($"TakeDamage | dmg={damage} | hp={_currentHealth}/{maxHealth}");
 
         _hitFlash?.Flash();
+        VfxManager.Instance?.SpawnEnemyHurt(transform.position);
         _poise?.ReceivePoiseHit(damage * 5f);
 
         if (_currentHealth <= 0) { Die(); return; }
@@ -478,6 +479,7 @@ public class OwlEnemy : MonoBehaviour, IDamageable, IStaggerable
         _hitAppliedThisLeap = true; // evita que hit residual seja aplicado no stagger
 
         _hitFlash?.PoiseBreakFlash();
+        VfxManager.Instance?.SpawnPoiseBreak(transform.position);
         _anim?.ForceState(AnimStagger);
         StartCoroutine(StaggerRoutine(poiseBreakStaggerDuration));
     }

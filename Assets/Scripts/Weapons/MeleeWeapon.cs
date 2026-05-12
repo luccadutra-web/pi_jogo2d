@@ -73,6 +73,9 @@ public class MeleeWeapon : MonoBehaviour
     [Tooltip("Se true, o hit é aplicado pelo Animation Event OnAttackActiveStart.\n" +
              "Se false, usa os timers de startup do Inspector (modo legado).")]
     [SerializeField] private bool attackDrivenByAnimation = true;
+    [Header("VFX")]
+    [Tooltip("FeedbackFxPlayer do player. Deixe vazio para buscar no pai.")]
+    [SerializeField] private VfxManager vfxManager;
 
     [Header("Ataque leve")]
     [SerializeField] private float lightAttackRange = 1.5f;
@@ -274,6 +277,9 @@ public class MeleeWeapon : MonoBehaviour
 
         if (animController == null)
             Debug.LogError("[MeleeWeapon] CharacterAnimationController não encontrado no pai.");
+
+        if (vfxManager == null)
+        vfxManager = VfxManager.Instance;
     }
 
     void OnEnable() { lightAction.Enable(); heavyAction.Enable(); }
@@ -489,6 +495,11 @@ public class MeleeWeapon : MonoBehaviour
         else
             animController?.SetTriggerDirect(trigger);
 
+                    // Slash trail — spawna no início do startup, junto com a animação
+        string trailType = type == AttackType.Heavy ? "heavy"
+                         : type == AttackType.Finisher ? "finisher"
+                         : "light";
+        vfxManager?.SpawnSlashTrail(trailType, attackPoint != null ? attackPoint : transform, comboStep);
         if (behavior != null)
         {
             behavior.isAttacking = true;
@@ -702,6 +713,15 @@ public class MeleeWeapon : MonoBehaviour
             // ── 2. ImpactFlash — frame branco no inimigo ─────────────────────
             var hitFlash = hit.GetComponent<HitFlash>() ?? hit.GetComponentInParent<HitFlash>();
             hitFlash?.ImpactFlash();
+
+            // VFX de hit no ponto de contato com o inimigo
+            string impactType = isCounter  ? "counter"
+                              : type == AttackType.Finisher ? "finisher"
+                              : type == AttackType.Heavy    ? "heavy"
+                              : "light";
+            Vector2 hitPos = hit.transform.position;
+            Vector2 hitDir = ((Vector2)hit.transform.position - (Vector2)attackPoint.position).normalized;
+            vfxManager?.SpawnHitImpact(impactType, hitPos, hitDir, isCounter, comboStep);
 
             // ── Dano e poise ──────────────────────────────────────────────────
             if (type == AttackType.Heavy)

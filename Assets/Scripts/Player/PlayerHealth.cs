@@ -410,6 +410,12 @@ public class PlayerHealth : MonoBehaviour
         animController?.SetTriggerDirect("Parry");
         hitFlash?.ParryFlash();
 
+        // VFX spawnam ANTES do slow motion — evita que o timeScale alterado
+        // atrase o início dos Particle Systems
+        float facing = transform.localScale.x >= 0 ? 1f : -1f;
+        VfxManager.Instance?.SpawnParry(transform.position, facing);
+        VfxManager.Instance?.SpawnDustParry(transform.position, facing);
+
         // Slow motion em vez de freeze total: o jogador vê o inimigo recuando
         // em câmera lenta antes do controle ser devolvido — o momento mais
         // satisfatório do combate. DoSlowMotion já cuida do ramp up suave de
@@ -422,6 +428,9 @@ public class PlayerHealth : MonoBehaviour
 
         CameraImpulse.Instance?.ParryZoom();
         OnParrySuccess?.Invoke();
+
+        // Spawna indicador de janela de counter
+        VfxManager.Instance?.SpawnCounterWindow(transform);
 
         if (lastAttackerTransform != null)
         {

@@ -1,10 +1,13 @@
 fileFormatVersion: 2
-guid: f0be1be838255a94690069f68ef3face
+guid: 7eb535ed319e5b3488ecff88df5ebac5
 TextureImporter:
   internalIDToNameTable:
   - first:
       213: -7487144240492279332
     second: run_00037_0
+  - first:
+      213: 1966550811178177325
+    second: run_00037_1
   externalObjects: {}
   serializedVersion: 13
   mipmaps:
@@ -37,7 +40,7 @@ TextureImporter:
   maxTextureSize: 2048
   textureSettings:
     serializedVersion: 2
-    filterMode: 0
+    filterMode: 1
     aniso: 1
     mipBias: 0
     wrapU: 1
@@ -48,7 +51,7 @@ TextureImporter:
   compressionQuality: 50
   spriteMode: 1
   spriteExtrude: 1
-  spriteMeshType: 0
+  spriteMeshType: 1
   alignment: 0
   spritePivot: {x: 0.5, y: 0.5}
   spritePixelsToUnits: 100
@@ -103,10 +106,10 @@ TextureImporter:
       name: run_00037_0
       rect:
         serializedVersion: 2
-        x: 97
-        y: 77
-        width: 350
-        height: 417
+        x: 1064
+        y: 216
+        width: 1063
+        height: 1268
       alignment: 0
       pivot: {x: 0, y: 0}
       border: {x: 0, y: 0, z: 0, w: 0}
@@ -117,6 +120,28 @@ TextureImporter:
       bones: []
       spriteID: cd9885b5bf1581890800000000000000
       internalID: -7487144240492279332
+      vertices: []
+      indices: 
+      edges: []
+      weights: []
+    - serializedVersion: 2
+      name: run_00037_1
+      rect:
+        serializedVersion: 2
+        x: 1414
+        y: 81
+        width: 430
+        height: 20
+      alignment: 0
+      pivot: {x: 0, y: 0}
+      border: {x: 0, y: 0, z: 0, w: 0}
+      customData: 
+      outline: []
+      physicsShape: []
+      tessellationDetail: -1
+      bones: []
+      spriteID: d2318052b879a4b10800000000000000
+      internalID: 1966550811178177325
       vertices: []
       indices: 
       edges: []
@@ -136,6 +161,7 @@ TextureImporter:
       entries: []
     nameFileIdTable:
       run_00037_0: -7487144240492279332
+      run_00037_1: 1966550811178177325
   mipmapLimitGroupName: 
   pSDRemoveMatte: 0
   userData: 
