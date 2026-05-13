@@ -3,11 +3,8 @@ guid: 8cd49dad1f75bb34cae55edb8779df85
 TextureImporter:
   internalIDToNameTable:
   - first:
-      213: 5307587491734405207
-    second: run_00022_0
-  - first:
-      213: 1049615383499632213
-    second: run_00022_1
+      213: -3649023278026000702
+    second: Run_00022_0
   externalObjects: {}
   serializedVersion: 13
   mipmaps:
@@ -51,7 +48,7 @@ TextureImporter:
   compressionQuality: 50
   spriteMode: 1
   spriteExtrude: 1
-  spriteMeshType: 1
+  spriteMeshType: 0
   alignment: 0
   spritePivot: {x: 0.5, y: 0.5}
   spritePixelsToUnits: 100
@@ -103,13 +100,13 @@ TextureImporter:
     serializedVersion: 2
     sprites:
     - serializedVersion: 2
-      name: run_00022_0
+      name: Run_00022_0
       rect:
         serializedVersion: 2
-        x: 1140
-        y: 196
-        width: 981
-        height: 1257
+        x: 1175
+        y: 156
+        width: 931
+        height: 1363
       alignment: 0
       pivot: {x: 0, y: 0}
       border: {x: 0, y: 0, z: 0, w: 0}
@@ -118,30 +115,8 @@ TextureImporter:
       physicsShape: []
       tessellationDetail: -1
       bones: []
-      spriteID: 750c223f3b658a940800000000000000
-      internalID: 5307587491734405207
-      vertices: []
-      indices: 
-      edges: []
-      weights: []
-    - serializedVersion: 2
-      name: run_00022_1
-      rect:
-        serializedVersion: 2
-        x: 1414
-        y: 81
-        width: 430
-        height: 20
-      alignment: 0
-      pivot: {x: 0, y: 0}
-      border: {x: 0, y: 0, z: 0, w: 0}
-      customData: 
-      outline: []
-      physicsShape: []
-      tessellationDetail: -1
-      bones: []
-      spriteID: 55ee74451abf09e00800000000000000
-      internalID: 1049615383499632213
+      spriteID: 2c6f02879a01c5dc0800000000000000
+      internalID: -3649023278026000702
       vertices: []
       indices: 
       edges: []
@@ -160,8 +135,7 @@ TextureImporter:
     spriteCustomMetadata:
       entries: []
     nameFileIdTable:
-      run_00022_0: 5307587491734405207
-      run_00022_1: 1049615383499632213
+      Run_00022_0: -3649023278026000702
   mipmapLimitGroupName: 
   pSDRemoveMatte: 0
   userData: 

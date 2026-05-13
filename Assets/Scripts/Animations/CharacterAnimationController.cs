@@ -4,6 +4,16 @@ using System.Collections.Generic;
 /// <summary>
 /// Controller centralizado de animação.
 /// Player e inimigos reutilizam este componente.
+///
+/// ── LOGS DE DIAGNÓSTICO ──────────────────────────────────────────────────────
+///
+///  Filtre o Console por "[AnimController]" para ver:
+///    - Todos os triggers disparados (SetTriggerDirect / TriggerAnimation)
+///    - ForceState: estado solicitado + resultado (sucesso ou state não encontrado)
+///    - Relay dos Animation Events: confirma que os eventos chegaram e foram
+///      repassados ao MeleeWeapon
+///    - Avisos se parâmetros ou states não existirem no Animator
+///
 /// </summary>
 [RequireComponent(typeof(Animator))]
 public class CharacterAnimationController : MonoBehaviour
@@ -11,14 +21,13 @@ public class CharacterAnimationController : MonoBehaviour
     private Animator _animator;
 
     // Hash cache
-    private static readonly int AnimSpeed        = Animator.StringToHash("Speed");
-    private static readonly int AnimJump         = Animator.StringToHash("Jump");
-    private static readonly int AnimIsGrounded   = Animator.StringToHash("IsGrounded");
-    private static readonly int AnimIsDefending  = Animator.StringToHash("IsDefending");
-    private static readonly int AnimDefendStart  = Animator.StringToHash("DefendStart");
+    private static readonly int AnimSpeed       = Animator.StringToHash("Speed");
+    private static readonly int AnimJump        = Animator.StringToHash("Jump");
+    private static readonly int AnimIsGrounded  = Animator.StringToHash("IsGrounded");
+    private static readonly int AnimIsDefending = Animator.StringToHash("IsDefending");
+    private static readonly int AnimDefendStart = Animator.StringToHash("DefendStart");
 
-    // Cache de parâmetros — construído uma vez no Awake para evitar iteração
-    // a cada chamada de HasParameter (que antes percorria o array inteiro por frame).
+    // Cache de parâmetros — construído uma vez no Awake para evitar iteração por frame.
     private readonly HashSet<string> _triggerParams = new HashSet<string>();
     private readonly HashSet<string> _boolParams    = new HashSet<string>();
     private readonly HashSet<string> _floatParams   = new HashSet<string>();
@@ -27,6 +36,35 @@ public class CharacterAnimationController : MonoBehaviour
     {
         _animator = GetComponent<Animator>();
         BuildParameterCache();
+    }
+
+    void Start()
+    {
+        // ── Diagnóstico de setup ──────────────────────────────────────────────
+        // Verifica se os parâmetros essenciais existem no Animator Controller.
+        // Se algum estiver faltando, aparece no console logo ao entrar em Play.
+        string[] essentialFloats   = { "Speed" };
+        string[] essentialBools    = { "IsGrounded", "IsDefending" };
+        string[] essentialTriggers = { "Jump", "LightAttack1", "LightAttack2", "LightAttack3",
+                                       "HeavyAttack", "Finisher", "CounterAttack" };
+
+        foreach (string p in essentialFloats)
+            if (!_floatParams.Contains(p))
+                Debug.LogWarning($"[AnimController] Parâmetro float '{p}' não encontrado no Animator. " +
+                                 $"Verifique o Animator Controller em '{gameObject.name}'.");
+
+        foreach (string p in essentialBools)
+            if (!_boolParams.Contains(p))
+                Debug.LogWarning($"[AnimController] Parâmetro bool '{p}' não encontrado no Animator. " +
+                                 $"Verifique o Animator Controller em '{gameObject.name}'.");
+
+        foreach (string p in essentialTriggers)
+            if (!_triggerParams.Contains(p))
+                Debug.LogWarning($"[AnimController] Trigger '{p}' não encontrado no Animator. " +
+                                 $"Verifique o Animator Controller em '{gameObject.name}'.");
+
+        Debug.Log($"[AnimController] Inicializado em '{gameObject.name}'. " +
+                  $"Triggers={_triggerParams.Count} Bools={_boolParams.Count} Floats={_floatParams.Count}");
     }
 
     private void BuildParameterCache()
@@ -49,7 +87,7 @@ public class CharacterAnimationController : MonoBehaviour
     public void SetSpeed(float speed)
     {
         if (_floatParams.Contains("Speed"))
-            _animator.SetFloat(AnimSpeed, speed, 0f, Time.deltaTime);
+            _animator.SetFloat(AnimSpeed, speed, 0.08f, Time.deltaTime);
     }
 
     public void UpdateGrounded(bool grounded)
@@ -61,7 +99,12 @@ public class CharacterAnimationController : MonoBehaviour
     public void TriggerJump()
     {
         if (_triggerParams.Contains("Jump"))
+        {
             _animator.SetTrigger(AnimJump);
+            Debug.Log("[AnimController] TriggerJump disparado.");
+        }
+        else
+            Debug.LogWarning("[AnimController] TriggerJump: trigger 'Jump' não encontrado no Animator.");
 
         if (_boolParams.Contains("IsGrounded"))
             _animator.SetBool(AnimIsGrounded, false);
@@ -70,8 +113,7 @@ public class CharacterAnimationController : MonoBehaviour
     /// <summary>
     /// Trigger genérico com ResetTrigger defensivo.
     /// Usado para estados reativos (hurt, die, stagger) onde não pode haver
-    /// trigger stale acumulado de frame anterior.
-    /// NÃO use para ataques do player — use SetTriggerDirect.
+    /// trigger stale acumulado. NÃO use para ataques do player — use SetTriggerDirect.
     /// </summary>
     public void TriggerAnimation(string triggerName)
     {
@@ -79,7 +121,10 @@ public class CharacterAnimationController : MonoBehaviour
         {
             _animator.ResetTrigger(triggerName);
             _animator.SetTrigger(triggerName);
+            Debug.Log($"[AnimController] TriggerAnimation (com reset): '{triggerName}'");
         }
+        else
+            Debug.LogWarning($"[AnimController] TriggerAnimation: trigger '{triggerName}' não encontrado no Animator.");
     }
 
     /// <summary>
@@ -89,7 +134,13 @@ public class CharacterAnimationController : MonoBehaviour
     public void SetTriggerDirect(string triggerName)
     {
         if (_triggerParams.Contains(triggerName))
+        {
             _animator.SetTrigger(triggerName);
+            Debug.Log($"[AnimController] SetTriggerDirect: '{triggerName}'");
+        }
+        else
+            Debug.LogWarning($"[AnimController] SetTriggerDirect: trigger '{triggerName}' não encontrado no Animator. " +
+                             $"Verifique se o trigger está cadastrado no Animator Controller.");
     }
 
     /// <summary>
@@ -99,6 +150,8 @@ public class CharacterAnimationController : MonoBehaviour
     {
         if (_boolParams.Contains(param))
             _animator.SetBool(param, value);
+        else
+            Debug.LogWarning($"[AnimController] SetBool: parâmetro '{param}' não encontrado no Animator.");
     }
 
     /// <summary>
@@ -108,6 +161,8 @@ public class CharacterAnimationController : MonoBehaviour
     {
         if (_boolParams.Contains("IsDefending"))
             _animator.SetBool(AnimIsDefending, value);
+        else
+            Debug.LogWarning("[AnimController] SetDefending: bool 'IsDefending' não encontrado no Animator.");
     }
 
     /// <summary>
@@ -117,11 +172,11 @@ public class CharacterAnimationController : MonoBehaviour
     /// </summary>
     public void ForceState(string stateName, int layer = 0)
     {
-        // Verifica se o state existe antes de tentar a transição.
-        // GetCurrentAnimatorStateInfo não serve aqui; usamos HasState via hash.
-        if (!_animator.HasState(layer, Animator.StringToHash(stateName)))
+        int hash = Animator.StringToHash(stateName);
+        if (!_animator.HasState(layer, hash))
         {
-            Debug.LogWarning($"[AnimController] ForceState: state '{stateName}' não existe no layer {layer}. Adicione o state ao Animator.");
+            Debug.LogWarning($"[AnimController] ForceState: state '{stateName}' não existe no layer {layer}. " +
+                             $"Adicione o state ao Animator — o player pode ficar preso na animação atual.");
             return;
         }
 
@@ -132,35 +187,69 @@ public class CharacterAnimationController : MonoBehaviour
         }
 
         _animator.CrossFade(stateName, 0f, layer);
+        Debug.Log($"[AnimController] ForceState: '{stateName}' (layer {layer})");
     }
 
     // ─── Relay de Animation Events ────────────────────────────────────────────
     //
-    // Clipes compartilhados entre Player e Enemy disparam eventos neste componente.
-    // Cada método faz o relay para o receptor correto no mesmo GameObject ou pai.
+    // Os clipes de animação disparam eventos neste componente.
+    // Cada método faz o relay para MeleeWeapon no mesmo GameObject.
+    //
+    // IMPORTANTE: MeleeWeapon deve estar no MESMO GameObject que este componente.
+    // Se estiver num filho, troque GetComponent por GetComponentInChildren abaixo.
 
-    /// <summary>
-    /// Relay do Animation Event de ataque do Enemy.
-    /// </summary>
-    public void AnimationEvent_DealAttackHit()
+    public void OnAttackActiveStart()
     {
-        GetComponent<EnemyBehavior>()?.DealAttackHit();
+        var weapon = GetComponent<MeleeWeapon>();
+        if (weapon != null)
+            weapon.OnAttackActiveStart();
+        else
+            Debug.LogError("[AnimController] OnAttackActiveStart: MeleeWeapon não encontrado em " +
+                           $"'{gameObject.name}'. O evento não chegará à rotina de ataque.");
     }
 
-    /// <summary>
-    /// Relay dos Animation Events do MeleeWeapon (player).
-    /// Necessário quando o MeleeWeapon está no mesmo GameObject que o Animator.
-    /// </summary>
-    public void OnAttackActiveStart()  => GetComponent<MeleeWeapon>()?.OnAttackActiveStart();
-    public void OnAttackActiveEnd()    => GetComponent<MeleeWeapon>()?.OnAttackActiveEnd();
-    public void OnAttackRecoveryEnd()  => GetComponent<MeleeWeapon>()?.OnAttackRecoveryEnd();
-    public void OnComboWindowOpen()    => GetComponent<MeleeWeapon>()?.OnComboWindowOpen();
-    public void OnComboWindowClose()   => GetComponent<MeleeWeapon>()?.OnComboWindowClose();
+    public void OnAttackActiveEnd()
+    {
+        var weapon = GetComponent<MeleeWeapon>();
+        if (weapon != null)
+            weapon.OnAttackActiveEnd();
+        else
+            Debug.LogError("[AnimController] OnAttackActiveEnd: MeleeWeapon não encontrado em " +
+                           $"'{gameObject.name}'.");
+    }
 
-    /// <summary>
-    /// Relay dos Animation Events de parry.
-    /// Funciona tanto no Player (PlayerHealth) quanto na Coruja (OwlEnemy).
-    /// </summary>
+    public void OnAttackRecoveryEnd()
+    {
+        var weapon = GetComponent<MeleeWeapon>();
+        if (weapon != null)
+            weapon.OnAttackRecoveryEnd();
+        else
+            Debug.LogError("[AnimController] OnAttackRecoveryEnd: MeleeWeapon não encontrado em " +
+                           $"'{gameObject.name}'.");
+    }
+
+    public void OnComboWindowOpen()
+    {
+        var weapon = GetComponent<MeleeWeapon>();
+        if (weapon != null)
+            weapon.OnComboWindowOpen();
+        else
+            Debug.LogError("[AnimController] OnComboWindowOpen: MeleeWeapon não encontrado em " +
+                           $"'{gameObject.name}'.");
+    }
+
+    public void OnComboWindowClose()
+    {
+        var weapon = GetComponent<MeleeWeapon>();
+        if (weapon != null)
+            weapon.OnComboWindowClose();
+        else
+            Debug.LogError("[AnimController] OnComboWindowClose: MeleeWeapon não encontrado em " +
+                           $"'{gameObject.name}'.");
+    }
+
+    // ─── Relay de parry ───────────────────────────────────────────────────────
+
     public void OnParryWindowOpen()
     {
         GetComponent<PlayerHealth>()?.OnParryWindowOpen();
@@ -173,11 +262,19 @@ public class CharacterAnimationController : MonoBehaviour
         GetComponent<OwlEnemy>()?.OnParryWindowClose();
     }
 
-    /// <summary>
-    /// Relay dos Animation Events do OwlEnemy (janela de hit da bicada).
-    /// </summary>
+    // ─── Relay OwlEnemy ───────────────────────────────────────────────────────
+
     public void OnHitWindowOpen()  => GetComponent<OwlEnemy>()?.OnHitWindowOpen();
     public void OnHitWindowClose() => GetComponent<OwlEnemy>()?.OnHitWindowClose();
+
+    // ─── Relay Enemy genérico ─────────────────────────────────────────────────
+
+    public void AnimationEvent_DealAttackHit()
+    {
+        GetComponent<EnemyBehavior>()?.DealAttackHit();
+    }
+
+    // ─── Utilitário interno ───────────────────────────────────────────────────
 
     private bool HasParameter(string paramName, AnimatorControllerParameterType type)
     {

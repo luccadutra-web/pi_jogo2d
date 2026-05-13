@@ -3,22 +3,30 @@ using UnityEngine;
 using UnityEngine.InputSystem;
 
 /// <summary>
-/// MeleeWeapon — v4: cadeia de impact feel completa e sincronizada.
+/// MeleeWeapon — v6: Timeouts em todos os loops de Animation Event + logs de diagnóstico.
 ///
 /// ── COMO FUNCIONA ────────────────────────────────────────────────────────────
 ///
-///  O mesmo padrão do parry (PlayerHealth) agora se aplica ao ataque inteiro.
 ///  A animação controla cada transição de fase; o código só reage aos sinais:
 ///
 ///     Frame de início da hitbox      →  OnAttackActiveStart()
-///     Frame de fim   da hitbox       →  OnAttackActiveEnd()        (opcional*)
-///     Frame de início do recovery    →  OnAttackRecoveryEnd()
-///     Frame de abertura de combo     →  OnComboWindowOpen()        (apenas Light)
-///     Frame de fechamento de combo   →  OnComboWindowClose()       (opcional**)
+///     Frame de fim   da hitbox       →  OnAttackActiveEnd()
+///     Fim do recovery / volta ao idle →  OnAttackRecoveryEnd()
+///     Abertura da janela de combo    →  OnComboWindowOpen()   (apenas Light)
+///     Fechamento da janela de combo  →  OnComboWindowClose()  (opcional)
 ///
-///  (*) Se OnAttackActiveEnd não for adicionado, o fallback activeTime é usado.
-///  (**) Se OnComboWindowClose não for adicionado, o timer comboWindowDuration
-///       ainda fecha a janela como segurança — igual ao modo legado.
+///  Todos os eventos acima DEVEM estar configurados nos clipes do Animator.
+///  A partir desta versão, qualquer evento faltando gera um warning claro no
+///  console e a rotina continua via timeout — o player não trava mais.
+///
+/// ── LOGS DE DIAGNÓSTICO ──────────────────────────────────────────────────────
+///
+///  Todos os logs usam o prefixo [MeleeWeapon] e incluem:
+///    - tipo de ataque e comboStep
+///    - fase da rotina (Startup / Active / ComboWindow / Recovery)
+///    - se o evento chegou normalmente ou por timeout/escape
+///
+///  Para filtrar no Console do Unity: filtre por "[MeleeWeapon]"
 ///
 /// ── CADEIA DE IMPACT FEEL (ordem de disparo em ApplyHit) ─────────────────────
 ///
@@ -28,20 +36,16 @@ using UnityEngine.InputSystem;
 ///   4. CameraShake    — APÓS o HitStop terminar (ShakeAfterHitStop coroutine)
 ///   5. CameraImpulse  — micro zoom em TODOS os golpes (DoZoom público)
 ///
-///   CameraShake durante HitStop é invisível pois a tela está congelada.
-///   Por isso o shake é sempre adiado via ShakeAfterHitStop().
-///
 /// ── HITLAG POR TIPO ───────────────────────────────────────────────────────────
 ///
-///   Light    → lightHitlagPerStep[comboStep-1]  (cresce a cada step: 0.03 → 0.05 → 0.07)
-///   Heavy    → heavyHitlagDuration   (longo — reforça peso)
-///   Finisher → finisherHitlagDuration (muito longo — dramático)
-///   Counter  → 0                     (stagger já cobre o freeze do inimigo)
+///   Light    → lightHitlagPerStep[comboStep-1]
+///   Heavy    → heavyHitlagDuration
+///   Finisher → finisherHitlagDuration
+///   Counter  → 0  (stagger cobre o freeze)
 ///
 /// ── SETUP NO ANIMATOR ────────────────────────────────────────────────────────
 ///
 ///   Em cada clipe de ataque (LightAttack, HeavyAttack, Finisher, CounterAttack):
-///
 ///     Início da hitbox    →  Animation Event → OnAttackActiveStart
 ///     Fim da hitbox       →  Animation Event → OnAttackActiveEnd
 ///     Fim do recovery     →  Animation Event → OnAttackRecoveryEnd
@@ -49,17 +53,6 @@ using UnityEngine.InputSystem;
 ///   Nos clipes LightAttack (combo):
 ///     Abertura da janela  →  Animation Event → OnComboWindowOpen
 ///     Fechamento (opt.)   →  Animation Event → OnComboWindowClose
-///
-///   Para finisher, a janela de finisher segue o mesmo padrão com
-///   OnComboWindowOpen / OnComboWindowClose no clipe do 3º light.
-///
-///   O componente receptor deve ser o MeleeWeapon (arraste o GameObject da arma
-///   ou do player, dependendo de onde o componente está, no campo do evento).
-///
-/// ── MODO LEGADO ──────────────────────────────────────────────────────────────
-///
-///   attackDrivenByAnimation = false  →  comportamento original com timers.
-///   Útil para testar ou para ataques sem animação ainda configurada.
 ///
 /// ─────────────────────────────────────────────────────────────────────────────
 /// </summary>
@@ -69,10 +62,6 @@ public class MeleeWeapon : MonoBehaviour
     [SerializeField] private Transform attackPoint;
     [SerializeField] private LayerMask enemyLayer;
 
-    [Header("Modo de sincronização")]
-    [Tooltip("Se true, o hit é aplicado pelo Animation Event OnAttackActiveStart.\n" +
-             "Se false, usa os timers de startup do Inspector (modo legado).")]
-    [SerializeField] private bool attackDrivenByAnimation = true;
     [Header("VFX")]
     [Tooltip("FeedbackFxPlayer do player. Deixe vazio para buscar no pai.")]
     [SerializeField] private VfxManager vfxManager;
@@ -88,7 +77,7 @@ public class MeleeWeapon : MonoBehaviour
     [SerializeField] private float[] lightShakeIntensityPerStep = { 0.06f, 0.09f, 0.12f };
     [Tooltip("Duração do camera shake por step.")]
     [SerializeField] private float[] lightShakeDurationPerStep  = { 0.12f, 0.14f, 0.16f };
-    [Tooltip("Duração do hitlag no inimigo por step. Step 1 curto mantém ritmo; step 3 reforça peso antes do finisher.")]
+    [Tooltip("Duração do hitlag no inimigo por step.")]
     [SerializeField] private float[] lightHitlagPerStep         = { 0.03f, 0.05f, 0.07f };
 
     [Header("Heavy independente")]
@@ -115,156 +104,124 @@ public class MeleeWeapon : MonoBehaviour
     [Header("Input buffer")]
     [SerializeField] private float inputBufferWindow = 0.10f;
 
-    [Header("Timings — usados no modo legado e como fallback de segurança")]
-    [Tooltip("Startup: tempo até o hit (usado no modo legado)")]
-    [SerializeField] private float lightStartup    = 0.20f;
-    [SerializeField] private float lightActiveTime = 0.12f;
-    [SerializeField] private float lightRecovery   = 0.32f;
-    [SerializeField] private float heavyStartup    = 0.32f;
-    [SerializeField] private float heavyActiveTime = 0.15f;
-    [SerializeField] private float heavyRecovery   = 0.55f;
-    [SerializeField] private float finisherStartup    = 0.40f;
-    [SerializeField] private float finisherActiveTime = 0.18f;
-    [SerializeField] private float finisherRecovery   = 0.70f;
-
-    [Header("Fallback — modo animação")]
-    [Tooltip("Tempo máximo de espera pelo Animation Event OnAttackActiveStart.\n" +
-             "Se a animação não disparar o evento nesse tempo, o hit é aplicado assim mesmo.\n" +
-             "Deve ser maior que o startup mais longo (finisher = ~0.40s). Recomendado: 0.8s.")]
-    [SerializeField] private float animEventTimeout = 0.8f;
-    [Tooltip("Tempo máximo de espera pelo Animation Event OnAttackRecoveryEnd.\n" +
-             "Se não vier, encerra o recovery com base no timer de fallback (recovery + margem).\n" +
-             "Recomendado: maior que o recovery mais longo (finisher = ~0.70s). Recomendado: 1.5s.")]
-    [SerializeField] private float recoveryEventTimeout = 1.5f;
-
     [Header("Hitlag direcional")]
     [Tooltip("Heavy: longo para reforçar o peso do golpe.")]
     [SerializeField] private float heavyHitlagDuration    = 0.10f;
     [Tooltip("Finisher: máximo — dramático e conclusivo.")]
     [SerializeField] private float finisherHitlagDuration = 0.18f;
-    // Counter não tem hitlag — o stagger do inimigo já cobre o freeze.
     [Range(0f, 1f)]
     [SerializeField] private float hitlagVelocityRetention = 0.15f;
 
     [Header("Knockback pós-hitlag")]
-    [Tooltip("Se true, aplica um impulso de recuo com easing após o freeze do hitlag.\n" +
-             "É o que dá a sensação de 'peso' ao golpe — o inimigo voa e desacelera.")]
-    [SerializeField] private bool knockbackEnabled = true;
-    [Tooltip("Força do knockback por tipo de ataque (unidades/s no frame inicial).")]
+    [SerializeField] private bool  knockbackEnabled = true;
     [SerializeField] private float lightKnockbackForce    = 5f;
     [SerializeField] private float heavyKnockbackForce    = 10f;
     [SerializeField] private float finisherKnockbackForce = 16f;
-    [Tooltip("Duração do easing do knockback em segundos. O inimigo desacelera ao longo desse tempo.\n" +
-             "Valores maiores = desliza mais. Sugerido: 0.10–0.18s.")]
     [SerializeField] private float lightKnockbackDuration    = 0.10f;
     [SerializeField] private float heavyKnockbackDuration    = 0.14f;
     [SerializeField] private float finisherKnockbackDuration = 0.18f;
-    [Tooltip("Fração de força vertical adicionada ao knockback (0 = só horizontal, 0.3 = leve pop pra cima).\n" +
-             "Dá a impressão de que o inimigo 'levanta' levemente no impacto.")]
     [SerializeField] private float knockbackVerticalFraction = 0.2f;
 
     [Header("Counter attack")]
     [SerializeField] private float counterImpactMultiplier = 2f;
     [SerializeField] private float counterKnockbackForce    = 18f;
     [SerializeField] private float counterKnockbackDuration = 0.20f;
-    [Tooltip("Escala de tempo durante o slow motion do counter (0.05 = quase parado).\nValor sugerido: igual ou ligeiramente mais alto que o parry (0.08).")]
     [SerializeField] private float counterSlowScale    = 0.08f;
-    [Tooltip("Duração do slow motion em tempo real antes do ramp up.")]
     [SerializeField] private float counterSlowHold     = 0.12f;
-    [Tooltip("Duração do ramp up suave de volta a timeScale=1.")]
     [SerializeField] private float counterSlowRampUp   = 0.20f;
 
     [Header("Camera shake direcional")]
-    [Tooltip("Bias da direção no primeiro frame do shake (0 = randômico puro, 1 = só na direção do golpe).\n" +
-             "0.65 ancora o impacto no espaço sem parecer mecânico. Finisher pode ir até 0.85.")]
     [Range(0f, 1f)]
     [SerializeField] private float shakeDirectionBias = 0.65f;
 
     [Header("Micro zoom de câmera por golpe")]
-    [Tooltip("Zoom in ao acertar um light attack. 0 = desativado.")]
     [SerializeField] private float lightZoomAmount    = 0.02f;
-    [Tooltip("Zoom in ao acertar um heavy attack.")]
     [SerializeField] private float heavyZoomAmount    = 0.05f;
-    [Tooltip("Zoom in ao acertar o finisher.")]
     [SerializeField] private float finisherZoomAmount = 0.10f;
-    [Tooltip("Duração do zoom in para golpes normais (segundos reais).")]
     [SerializeField] private float attackZoomInTime   = 0.04f;
-    [Tooltip("Duração do zoom out para golpes normais (segundos reais).")]
     [SerializeField] private float attackZoomOutTime  = 0.12f;
 
     [Header("Dano de postura (Poise)")]
-    [Tooltip("Sistema de poise desabilitado. Reative poiseEnabled em EnemyPoise para usar.")]
     [HideInInspector] [SerializeField] private float lightPoiseDamage    = 20f;
     [HideInInspector] [SerializeField] private float heavyPoiseDamage    = 45f;
     [HideInInspector] [SerializeField] private float finisherPoiseDamage = 999f;
 
     [Header("Anticipation squash")]
-    [Tooltip("Se true, aplica um squash rápido no sprite do player antes de cada golpe.\n" +
-             "Dá a sensação de que o personagem 'carrega' antes de atacar.")]
-    [SerializeField] private bool anticipationEnabled = true;
-    [Tooltip("Fator de escala X durante o squash (< 1 = comprime). Y é o inverso automático.\n" +
-             "Valores sugeridos: light 0.88 / heavy 0.82 / finisher 0.78.")]
+    [SerializeField] private bool  anticipationEnabled = true;
     [SerializeField] private float lightAnticipationScaleX    = 0.88f;
     [SerializeField] private float heavyAnticipationScaleX    = 0.82f;
     [SerializeField] private float finisherAnticipationScaleX = 0.78f;
-    [Tooltip("Duração total do squash (ida + volta) em segundos reais.\n" +
-             "Deve ser menor que o startup do ataque para não sobrepor o hit.\n" +
-             "Sugerido: 0.06s light, 0.09s heavy, 0.10s finisher.")]
     [SerializeField] private float lightAnticipationDuration    = 0.06f;
     [SerializeField] private float heavyAnticipationDuration    = 0.09f;
     [SerializeField] private float finisherAnticipationDuration = 0.10f;
+
+    // ── Finalizador — guard de segurança ─────────────────────────────────────
+    [Header("Finalizador — disponibilidade")]
+    [Tooltip("Desative enquanto a animação do finalizador não existir no Animator.\n" +
+             "Com false: o combo de 3 lights termina normalmente sem tentar entrar\n" +
+             "no state 'Finisher', e o heavy after-combo é ignorado com segurança.")]
+    [SerializeField] private bool finisherEnabled = false;
+
+    // ── Timeouts de segurança ─────────────────────────────────────────────────
+    // Evitam que loops de Animation Event travem o player se um evento estiver
+    // faltando ou mal configurado no clipe. Ajuste conforme a duração das animações.
+    [Header("Timeouts de segurança (Animation Events)")]
+    [Tooltip("Tempo máximo (s) esperando OnAttackActiveStart antes de continuar forçado.")]
+    [SerializeField] private float timeoutActiveStart  = 1.5f;
+    [Tooltip("Tempo máximo (s) esperando OnAttackActiveEnd antes de continuar forçado.")]
+    [SerializeField] private float timeoutActiveEnd    = 1.5f;
+    [Tooltip("Tempo máximo (s) esperando OnComboWindowOpen antes de continuar forçado.")]
+    [SerializeField] private float timeoutComboOpen    = 1.5f;
+    [Tooltip("Tempo máximo (s) esperando OnAttackRecoveryEnd antes de continuar forçado.")]
+    [SerializeField] private float timeoutRecoveryEnd  = 2.0f;
 
     // ─── Estado interno ───────────────────────────────────────────────────────
 
     private enum AttackType { Light, Heavy, Finisher }
 
-    private int comboStep = 0;
-    private bool isAttacking = false;
+    private int   comboStep = 0;
+    private bool  isAttacking = false;
     private Coroutine _attackCoroutine;
-    private bool comboWindowOpen = false;
-    private bool finisherWindowOpen = false;
+    private bool  comboWindowOpen = false;
+    private bool  finisherWindowOpen = false;
     private float comboWindowTimer;
     private float finisherWindowTimer;
     private float heavyCooldownTimer;
 
-    private bool lightBuffered;
-    private bool heavyBuffered;
+    private bool  lightBuffered;
+    private bool  heavyBuffered;
     private float lightBufferTimer;
     private float heavyBufferTimer;
-    private bool _justStartedAttack;
+    private bool  _justStartedAttack;
 
     // Sinais dos Animation Events para a coroutine
     private bool _animEventActiveStart = false;
-    private bool _animEventActiveEnd = false;
+    private bool _animEventActiveEnd   = false;
     private bool _animEventRecoveryEnd = false;
-    private bool _animEventComboOpen = false;
-    private bool _animEventComboClose = false;
+    private bool _animEventComboOpen   = false;
+    private bool _animEventComboClose  = false;
 
-    // Tipo do ataque em execução (para ApplyHit saber o tipo quando chamado pelo evento)
     private AttackType _currentAttackType;
     private bool _currentIsCounter;
 
-    private const string TriggerLight = "LightAttack";
-    private const string TriggerHeavy = "HeavyAttack";
+    private static readonly string[] TriggersLight = { "LightAttack1", "LightAttack2", "LightAttack3" };
+    private const string TriggerHeavy    = "HeavyAttack";
     private const string TriggerFinisher = "Finisher";
-    private const string TriggerCounter = "CounterAttack";
+    private const string TriggerCounter  = "CounterAttack";
 
-    // Nomes dos states no Animator — devem bater exatamente com o grafo (case-sensitive).
-    // Se o state não existir, AttackRoutine cai automaticamente nos timers legados.
-    private const string StateLight = "light_attack";
-    private const string StateHeavy = "heavy_attack";
+    private static readonly string[] StatesLight = { "light_attack_1", "light_attack_2", "light_attack_3" };
+    private const string StateHeavy    = "heavy_attack";
     private const string StateFinisher = "Finisher";
-    private const string StateCounter = "CounterAttack";
-    private const string StateIdle = "idle";
+    private const string StateCounter  = "CounterAttack";
+    private const string StateIdle     = "idle";
 
     private InputAction lightAction;
     private InputAction heavyAction;
 
     private PlayerBehavior behavior;
-    private PlayerStamina stamina;
-    private PlayerHealth health;
+    private PlayerStamina  stamina;
+    private PlayerHealth   health;
     private CharacterAnimationController animController;
-    private Animator _animator;
 
     // ─── Unity ────────────────────────────────────────────────────────────────
 
@@ -279,20 +236,38 @@ public class MeleeWeapon : MonoBehaviour
 
     void Start()
     {
-        behavior = GetComponentInParent<PlayerBehavior>();
-        stamina = GetComponentInParent<PlayerStamina>();
-        health = GetComponentInParent<PlayerHealth>();
+        behavior       = GetComponentInParent<PlayerBehavior>();
+        stamina        = GetComponentInParent<PlayerStamina>();
+        health         = GetComponentInParent<PlayerHealth>();
         animController = GetComponentInParent<CharacterAnimationController>();
-        _animator = GetComponentInParent<Animator>();
 
+        // ── Diagnóstico de setup ──────────────────────────────────────────────
         if (animController == null)
-            Debug.LogError("[MeleeWeapon] CharacterAnimationController não encontrado no pai.");
+            Debug.LogError("[MeleeWeapon] CharacterAnimationController não encontrado no pai. " +
+                           "Animation Events NÃO chegarão a MeleeWeapon.");
+
+        if (behavior == null)
+            Debug.LogError("[MeleeWeapon] PlayerBehavior não encontrado no pai. " +
+                           "Flags de movimento não serão controladas.");
+
+        if (attackPoint == null)
+            Debug.LogWarning("[MeleeWeapon] attackPoint não atribuído no Inspector. " +
+                             "Hitbox usará transform.position como fallback.");
+
+        Debug.Log($"[MeleeWeapon] Inicializado em '{gameObject.name}'. " +
+                  $"behavior={behavior?.gameObject.name ?? "NULL"}, " +
+                  $"animController={animController?.gameObject.name ?? "NULL"}");
+
+        if (!finisherEnabled)
+            Debug.LogWarning("[MeleeWeapon] finisherEnabled = FALSE. " +
+                             "Finalizador desabilitado — combo de 3 lights termina normalmente, " +
+                             "heavy after-combo é ignorado. Ative quando 'Finisher' existir no Animator.");
 
         if (vfxManager == null)
-        vfxManager = VfxManager.Instance;
+            vfxManager = VfxManager.Instance;
     }
 
-    void OnEnable() { lightAction.Enable(); heavyAction.Enable(); }
+    void OnEnable()  { lightAction.Enable(); heavyAction.Enable(); }
 
     void OnDisable()
     {
@@ -301,7 +276,7 @@ public class MeleeWeapon : MonoBehaviour
 
         if (behavior != null)
         {
-            behavior.isAttacking = false;
+            behavior.isAttacking               = false;
             behavior.isInAttackStartupOrActive = false;
         }
     }
@@ -321,52 +296,33 @@ public class MeleeWeapon : MonoBehaviour
 
     // ─── Animation Events ─────────────────────────────────────────────────────
 
-    /// <summary>
-    /// Chame via Animation Event no frame em que a arma entra na zona de hit.
-    /// A coroutine aguarda este sinal para aplicar o dano.
-    /// </summary>
     public void OnAttackActiveStart()
     {
+        Debug.Log($"[MeleeWeapon] Event: OnAttackActiveStart | step={comboStep} | isAttacking={isAttacking}");
         _animEventActiveStart = true;
     }
 
-    /// <summary>
-    /// Chame via Animation Event no frame em que a arma sai da zona de hit.
-    /// A coroutine usa este sinal para encerrar o estado active.
-    /// Opcional: se não adicionado, o fallback activeTime do Inspector é usado.
-    /// </summary>
     public void OnAttackActiveEnd()
     {
+        Debug.Log($"[MeleeWeapon] Event: OnAttackActiveEnd | step={comboStep}");
         _animEventActiveEnd = true;
     }
 
-    /// <summary>
-    /// Chame via Animation Event no frame em que o recovery termina
-    /// (último frame antes de Idle ou antes da janela de combo se abrir).
-    /// A coroutine usa este sinal para encerrar o ataque e consumir o buffer.
-    /// Opcional: se não adicionado, o fallback recoveryEventTimeout é usado.
-    /// </summary>
     public void OnAttackRecoveryEnd()
     {
+        Debug.Log($"[MeleeWeapon] Event: OnAttackRecoveryEnd | step={comboStep}");
         _animEventRecoveryEnd = true;
     }
 
-    /// <summary>
-    /// Chame via Animation Event no frame em que a janela de combo deve abrir
-    /// (nos clipes LightAttack). Substitui a abertura por timer fixo.
-    /// </summary>
     public void OnComboWindowOpen()
     {
+        Debug.Log($"[MeleeWeapon] Event: OnComboWindowOpen | step={comboStep}");
         _animEventComboOpen = true;
     }
 
-    /// <summary>
-    /// Chame via Animation Event no frame em que a janela de combo deve fechar.
-    /// Opcional: se não adicionado, o timer comboWindowDuration/finisherWindowDuration
-    /// ainda fecha a janela como segurança.
-    /// </summary>
     public void OnComboWindowClose()
     {
+        Debug.Log($"[MeleeWeapon] Event: OnComboWindowClose | step={comboStep}");
         _animEventComboClose = true;
     }
 
@@ -376,13 +332,13 @@ public class MeleeWeapon : MonoBehaviour
     {
         if (lightAction.WasPressedThisFrame())
         {
-            lightBuffered = true;
+            lightBuffered    = true;
             lightBufferTimer = inputBufferWindow;
         }
 
         if (heavyAction.WasPressedThisFrame())
         {
-            heavyBuffered = true;
+            heavyBuffered    = true;
             heavyBufferTimer = inputBufferWindow;
         }
     }
@@ -409,12 +365,24 @@ public class MeleeWeapon : MonoBehaviour
 
     private void TryConsumeBuffer()
     {
+        // Finisher: só tenta se finisherEnabled = true no Inspector.
+        // Com false, a janela do finisher fecha limpa e o combo reseta sem travar.
         if (heavyBuffered && finisherWindowOpen)
         {
             heavyBuffered = false; heavyBufferTimer = 0f;
             finisherWindowOpen = false; comboWindowOpen = false;
-            ExecuteFinisher();
-            return;
+
+            if (finisherEnabled)
+            {
+                ExecuteFinisher();
+                return;
+            }
+            else
+            {
+                comboStep = 0;
+                Debug.Log("[MeleeWeapon] Finisher bloqueado (finisherEnabled=false) — combo resetado.");
+                return;
+            }
         }
 
         if (lightBuffered)
@@ -472,14 +440,9 @@ public class MeleeWeapon : MonoBehaviour
 
     private void StartAttackRoutine(AttackType type)
     {
-        // Cancela a coroutine anterior apenas se ainda estiver na fase startup/active —
-        // ou seja, se isAttacking ainda for true. Durante a janela de combo e recovery
-        // isAttacking já é false: o buffer cuida da transição e não deve haver cancelamento,
-        // pois isso cortaria a animação de recovery visualmente.
         if (_attackCoroutine != null && isAttacking)
         {
             StopCoroutine(_attackCoroutine);
-            // Reseta flags de Animation Events que a rotina anterior deixaria sujas
             _animEventActiveStart = false;
             _animEventActiveEnd   = false;
             _animEventComboOpen   = false;
@@ -495,43 +458,55 @@ public class MeleeWeapon : MonoBehaviour
         _attackCoroutine = StartCoroutine(AttackRoutine(type));
     }
 
-    // ─── Rotina de ataque ─────────────────────────────────────────────────────
-
     /// <summary>
-    /// Retorna true se o Animator está no state de nome <paramref name="stateName"/>
-    /// na Base Layer. Usado para detectar se um clipe existe antes de aguardar eventos.
+    /// Cancela o ataque em andamento imediatamente — sem esperar eventos.
+    /// Chamado por PlayerHealth ao aplicar hurt, guard crush ou morte.
     /// </summary>
-    private bool IsInState(string stateName)
+    public void CancelAttack()
     {
-        if (_animator == null) return false;
-        return _animator.GetCurrentAnimatorStateInfo(0).IsName(stateName);
+        if (_attackCoroutine != null)
+        {
+            StopCoroutine(_attackCoroutine);
+            _attackCoroutine = null;
+        }
+
+        isAttacking        = false;
+        comboWindowOpen    = false;
+        finisherWindowOpen = false;
+        comboStep          = 0;
+
+        _animEventActiveStart = false;
+        _animEventActiveEnd   = false;
+        _animEventComboOpen   = false;
+        _animEventComboClose  = false;
+        _animEventRecoveryEnd = false;
+
+        if (behavior != null)
+        {
+            behavior.isAttacking               = false;
+            behavior.isInAttackStartupOrActive = false;
+        }
+
+        vfxManager?.ReturnActiveTrail();
+        Debug.Log("[MeleeWeapon] CancelAttack chamado — ataque cancelado externamente.");
     }
+
+    // ─── Rotina de ataque ─────────────────────────────────────────────────────
 
     private IEnumerator AttackRoutine(AttackType type)
     {
         isAttacking = true;
 
-        float startup = type == AttackType.Light ? lightStartup : type == AttackType.Heavy ? heavyStartup : finisherStartup;
-        float activeTime = type == AttackType.Light ? lightActiveTime : type == AttackType.Heavy ? heavyActiveTime : finisherActiveTime;
-        float recovery = type == AttackType.Light ? lightRecovery : type == AttackType.Heavy ? heavyRecovery : finisherRecovery;
-        string trigger = type == AttackType.Light ? TriggerLight : type == AttackType.Heavy ? TriggerHeavy : TriggerFinisher;
-        string stateName = type == AttackType.Light ? StateLight : type == AttackType.Heavy ? StateHeavy : StateFinisher;
+        int    lightIdx  = Mathf.Clamp(comboStep - 1, 0, StatesLight.Length - 1);
+        string trigger   = type == AttackType.Light ? TriggersLight[lightIdx] : type == AttackType.Heavy ? TriggerHeavy    : TriggerFinisher;
+        string stateName = type == AttackType.Light ? StatesLight[lightIdx]   : type == AttackType.Heavy ? StateHeavy      : StateFinisher;
 
-        // Verifica counter antes de setar o trigger
         bool isCounter = health != null && health.IsCounterWindowOpen;
         if (isCounter)
         {
-            // Slow motion antes do trigger — igual ao parry, dá tempo do jogador
-            // sentir o momento antes do golpe sair. DoSlowMotion usa WaitForSecondsRealtime
-            // internamente, então não é afetado pelo timeScale alterado.
             HitStop.Instance?.DoSlowMotion(counterSlowScale, counterSlowHold, counterSlowRampUp);
-
-            // Aguarda o slow motion terminar completamente antes de disparar a animação
-            // e checar os Animation Events — caso contrário, ActiveStart dispara durante
-            // o slow-mo e o knockback sai antes do contato visual.
             float slowTotal = counterSlowHold + counterSlowRampUp;
             yield return new WaitForSecondsRealtime(slowTotal);
-
             animController?.SetTriggerDirect(TriggerCounter);
             CameraImpulse.Instance?.CounterZoom();
             stateName = StateCounter;
@@ -539,188 +514,200 @@ public class MeleeWeapon : MonoBehaviour
         else
             animController?.SetTriggerDirect(trigger);
 
-                    // Slash trail — spawna no início do startup, junto com a animação
-        string trailType = type == AttackType.Heavy ? "heavy"
-                         : type == AttackType.Finisher ? "finisher"
-                         : "light";
+        string trailType = type == AttackType.Heavy ? "heavy" : type == AttackType.Finisher ? "finisher" : "light";
         if (!isCounter)
         {
             vfxManager?.SpawnSlashTrail(trailType, attackPoint != null ? attackPoint : transform, comboStep);
-
-            // Sprite de slash ancorado na arma — complementa o TrailRenderer.
-            // Ambos usam ReturnActiveTrail() para desancorar no fim do active.
             vfxManager?.SpawnSlashSprite(trailType, attackPoint != null ? attackPoint : transform);
         }
+
         if (behavior != null)
         {
-            behavior.isAttacking = true;
+            behavior.isAttacking               = true;
             behavior.isInAttackStartupOrActive = true;
         }
 
         _currentAttackType = type;
-        _currentIsCounter = isCounter;
+        _currentIsCounter  = isCounter;
 
-        // ── Anticipation squash ───────────────────────────────────────────────
-        //
-        // Roda em paralelo com o startup — não usa yield, não bloqueia o fluxo.
-        // O squash dura menos que o startup mais curto (light = 0.06s < 0.08s),
-        // então sempre termina antes do hit. Counter não recebe squash pois a
-        // leitura visual do parry já carrega toda a anticipation necessária.
         if (anticipationEnabled && !isCounter)
             StartCoroutine(AnticipationSquash(type));
 
-        // ── Detecta se o clipe existe ─────────────────────────────────────────
-        //
-        // Aguarda 1 frame para o Animator processar o trigger e fazer a transição.
-        // Se o state ativo não for o esperado, o clipe não existe no grafo —
-        // todas as fases usam timers legados sem emitir warnings de timeout.
+        // WaitForEndOfFrame garante que LateUpdate deste frame terminou antes de
+        // resetar as flags — eventos do clipe anterior não apagam os do novo.
+        yield return new WaitForEndOfFrame();
 
-        yield return null;
-        bool stateExists = IsInState(stateName);
+        _animEventActiveStart = false;
+        _animEventActiveEnd   = false;
+        _animEventComboOpen   = false;
+        _animEventComboClose  = false;
+        _animEventRecoveryEnd = false;
 
-        if (!stateExists)
-            Debug.Log($"[MeleeWeapon] State '{stateName}' não encontrado no Animator — usando timers legados para {type}.");
+        Debug.Log($"[MeleeWeapon] AttackRoutine START | type={type} | step={comboStep} | state={stateName} | isCounter={isCounter}");
 
         // ── Fase de Startup ───────────────────────────────────────────────────
-
-        if (attackDrivenByAnimation && stateExists)
+        // Aguarda OnAttackActiveStart. Timeout evita trava se evento estiver faltando.
         {
-            _animEventActiveStart = false;
             float elapsed = 0f;
-            while (!_animEventActiveStart && elapsed < animEventTimeout)
+            while (!_animEventActiveStart)
             {
+                if (behavior != null && behavior.isLocked)
+                {
+                    Debug.Log($"[MeleeWeapon] Startup interrompido por isLocked | type={type} step={comboStep}");
+                    yield break;
+                }
                 elapsed += Time.unscaledDeltaTime;
+                if (elapsed >= timeoutActiveStart)
+                {
+                    Debug.LogWarning($"[MeleeWeapon] TIMEOUT aguardando OnAttackActiveStart " +
+                                     $"(type={type} step={comboStep} state={stateName}). " +
+                                     $"Verifique o Animation Event no clipe.");
+                    break;
+                }
                 yield return null;
             }
-
-            if (!_animEventActiveStart)
-                Debug.LogWarning($"[MeleeWeapon] Timeout aguardando OnAttackActiveStart ({type}). Adicione o Animation Event no clipe '{stateName}'.");
-        }
-        else
-        {
-            yield return new WaitForSecondsRealtime(startup);
         }
 
         // ── Fase Active ───────────────────────────────────────────────────────
-        //
-        // Ataques normais: ApplyHit logo em OnAttackActiveStart — a hitbox abre
-        // no primeiro frame do active, comportamento padrão de beat-em-up.
-        //
-        // Counter: o contato visual (pé/punho chegando no inimigo) acontece perto
-        // do fim da janela ativa, não no início. Por isso adiamos o ApplyHit para
-        // OnAttackActiveEnd, garantindo que o knockback só ocorra após o impacto
-        // ser visível na tela.
-
         if (!isCounter)
-        {
             ApplyHit(type, isCounter);
-        }
 
-        // ── Fim do Active ─────────────────────────────────────────────────────
-
-        if (attackDrivenByAnimation && stateExists)
+        // Aguarda OnAttackActiveEnd. Timeout evita trava se evento estiver faltando.
         {
-            _animEventActiveEnd = false;
             float elapsed = 0f;
-            while (!_animEventActiveEnd && elapsed < activeTime + 0.1f)
+            while (!_animEventActiveEnd)
             {
+                if (behavior != null && behavior.isLocked)
+                {
+                    Debug.Log($"[MeleeWeapon] Active interrompido por isLocked | type={type} step={comboStep}");
+                    // Ainda precisa limpar as flags antes de sair
+                    if (behavior != null)
+                    {
+                        behavior.isInAttackStartupOrActive = false;
+                        behavior.isAttacking               = false;
+                    }
+                    isAttacking      = false;
+                    _attackCoroutine = null;
+                    yield break;
+                }
                 elapsed += Time.unscaledDeltaTime;
+                if (elapsed >= timeoutActiveEnd)
+                {
+                    Debug.LogWarning($"[MeleeWeapon] TIMEOUT aguardando OnAttackActiveEnd " +
+                                     $"(type={type} step={comboStep} state={stateName}). " +
+                                     $"Verifique o Animation Event no clipe.");
+                    break;
+                }
                 yield return null;
             }
         }
-        else
-        {
-            yield return new WaitForSecondsRealtime(activeTime);
-        }
 
-        // Counter aplica o hit aqui — após o contato visual
         if (isCounter)
         {
             ApplyHit(type, isCounter);
             health?.ConsumeCounterWindow();
         }
 
-        // Aguarda o HitStop terminar antes de liberar o movimento do player.
-        //
-        // Por que WaitForEndOfFrame e não yield return null:
-        //   Com Time.timeScale = 0, "yield return null" não avança — a coroutine
-        //   fica presa até o tempo ser restaurado, que é exatamente o que não
-        //   queremos (o freeze nunca terminaria de forma controlada).
-        //   WaitForEndOfFrame avança independente do timeScale, permitindo que
-        //   o loop verifique IsActive a cada frame real até o freeze acabar.
-        //
-        // Por que liberar DEPOIS do freeze e não antes:
-        //   Se liberarmos behavior.isAttacking = false enquanto timeScale = 0,
-        //   o player já pode se mover durante o congelamento — o que quebra
-        //   a leitura visual do impacto. O freeze deve durar inteiro antes de
-        //   devolver o controle.
-        if (HitStop.Instance != null)
-            while (HitStop.Instance.IsActive)
-                yield return new WaitForEndOfFrame();
-
+        // Libera movimento imediatamente após o active.
         if (behavior != null)
         {
             behavior.isInAttackStartupOrActive = false;
-            behavior.isAttacking = false;
+            behavior.isAttacking               = false;
         }
 
-        // ── Abertura da janela de combo ───────────────────────────────────────
+        Debug.Log($"[MeleeWeapon] ActiveEnd concluído | type={type} step={comboStep} — behavior liberado para movimento");
 
+        // ── Abertura da janela de combo (apenas Light) ────────────────────────
+        // Aguarda OnComboWindowOpen. Timeout evita trava se evento estiver faltando.
         if (type == AttackType.Light)
         {
-            bool dashedDuringComboWait = false;
+            float elapsed = 0f;
+            bool  escaped = false;
 
-            if (attackDrivenByAnimation && stateExists)
+            while (!_animEventComboOpen)
             {
-                _animEventComboOpen = false;
-                _animEventComboClose = false;
-                float elapsed = 0f;
-                while (!_animEventComboOpen && elapsed < recoveryEventTimeout)
+                if (behavior != null && behavior.IsDashing)
                 {
-                    if (behavior != null && behavior.IsDashing) { dashedDuringComboWait = true; break; }
-                    elapsed += Time.unscaledDeltaTime;
-                    yield return null;
+                    Debug.Log($"[MeleeWeapon] ComboWindow pulada por Dash | step={comboStep}");
+                    escaped = true;
+                    break;
                 }
-
-                if (!_animEventComboOpen && !dashedDuringComboWait)
-                    Debug.LogWarning($"[MeleeWeapon] Timeout aguardando OnComboWindowOpen (comboStep={comboStep}). Adicione o Animation Event no clipe '{stateName}'.");
+                if (behavior != null && behavior.isLocked)
+                {
+                    Debug.Log($"[MeleeWeapon] ComboWindow pulada por isLocked | step={comboStep}");
+                    escaped = true;
+                    break;
+                }
+                elapsed += Time.unscaledDeltaTime;
+                if (elapsed >= timeoutComboOpen)
+                {
+                    Debug.LogWarning($"[MeleeWeapon] TIMEOUT aguardando OnComboWindowOpen " +
+                                     $"(step={comboStep} state={stateName}). " +
+                                     $"Verifique o Animation Event no clipe.");
+                    break; // continua: trata como se a janela abrisse agora
+                }
+                yield return null;
             }
 
-            if (!dashedDuringComboWait)
+            if (!escaped)
             {
-                if (comboStep < 3) { comboWindowOpen = true; comboWindowTimer = comboWindowDuration; }
-                else { finisherWindowOpen = true; finisherWindowTimer = finisherWindowDuration; }
+                if (comboStep < 3)
+                {
+                    comboWindowOpen    = true;
+                    comboWindowTimer   = comboWindowDuration;
+                    Debug.Log($"[MeleeWeapon] ComboWindow ABERTA | step={comboStep} | duração={comboWindowDuration}s");
+                }
+                else
+                {
+                    // Só abre a janela do finisher se a feature estiver habilitada.
+                    // Com finisherEnabled=false: reseta o combo limpo, sem abrir janela
+                    // que nunca seria consumida, evitando qualquer trava de estado.
+                    if (finisherEnabled)
+                    {
+                        finisherWindowOpen  = true;
+                        finisherWindowTimer = finisherWindowDuration;
+                        Debug.Log($"[MeleeWeapon] FinisherWindow ABERTA | step={comboStep} | duração={finisherWindowDuration}s");
+                    }
+                    else
+                    {
+                        comboStep = 0;
+                        Debug.Log("[MeleeWeapon] FinisherWindow suprimida (finisherEnabled=false) — combo resetado.");
+                    }
+                }
             }
         }
 
         // ── Recovery ──────────────────────────────────────────────────────────
-
-        if (attackDrivenByAnimation && stateExists)
+        // Aguarda OnAttackRecoveryEnd. Timeout evita trava se evento estiver faltando.
         {
-            _animEventRecoveryEnd = false;
             float elapsed = 0f;
-            while (!_animEventRecoveryEnd && elapsed < recoveryEventTimeout)
+            while (!_animEventRecoveryEnd)
             {
-                if (behavior != null && behavior.IsDashing) break;
+                if (behavior != null && behavior.IsDashing)
+                {
+                    Debug.Log($"[MeleeWeapon] Recovery interrompido por Dash | type={type} step={comboStep}");
+                    break;
+                }
+                if (behavior != null && behavior.isLocked)
+                {
+                    Debug.Log($"[MeleeWeapon] Recovery interrompido por isLocked | type={type} step={comboStep}");
+                    break;
+                }
                 elapsed += Time.unscaledDeltaTime;
-                yield return null;
-            }
-
-            if (!_animEventRecoveryEnd && !(behavior != null && behavior.IsDashing))
-                Debug.LogWarning($"[MeleeWeapon] Timeout aguardando OnAttackRecoveryEnd ({type}). Adicione o Animation Event no clipe '{stateName}'.");
-        }
-        else
-        {
-            float recoveryElapsed = 0f;
-            while (recoveryElapsed < recovery)
-            {
-                if (behavior != null && behavior.IsDashing) break;
-                recoveryElapsed += Time.unscaledDeltaTime;
+                if (elapsed >= timeoutRecoveryEnd)
+                {
+                    Debug.LogWarning($"[MeleeWeapon] TIMEOUT aguardando OnAttackRecoveryEnd " +
+                                     $"(type={type} step={comboStep} state={stateName}). " +
+                                     $"Verifique o Animation Event no clipe.");
+                    break;
+                }
                 yield return null;
             }
         }
 
-        isAttacking = false;
+        Debug.Log($"[MeleeWeapon] AttackRoutine END | type={type} step={comboStep} — resetando combo e voltando ao idle");
+
+        isAttacking      = false;
         _attackCoroutine = null;
         TryConsumeBuffer();
 
@@ -738,8 +725,6 @@ public class MeleeWeapon : MonoBehaviour
         float range   = type == AttackType.Light ? lightAttackRange   : type == AttackType.Heavy ? heavyAttackRange   : finisherAttackRange;
         int   baseDmg = type == AttackType.Light ? lightDamage        : type == AttackType.Heavy ? heavyDamage        : finisherDamage;
 
-        // Para light attacks, usa arrays indexados por comboStep para criar progressão de peso.
-        // comboStep vai de 1 a 3; clamp garante segurança se chamado fora de sequência.
         int   step    = Mathf.Clamp(comboStep - 1, 0, 2);
         float hitStop = type == AttackType.Light ? lightHitStopPerStep[step]        : type == AttackType.Heavy ? heavyHitStop       : finisherHitStop;
         float shakeI  = type == AttackType.Light ? lightShakeIntensityPerStep[step] : type == AttackType.Heavy ? heavyShakeIntensity : finisherShakeIntensity;
@@ -749,18 +734,21 @@ public class MeleeWeapon : MonoBehaviour
         float finalStop  = isCounter ? hitStop * counterImpactMultiplier : hitStop;
         float finalShakeI= isCounter ? shakeI  * counterImpactMultiplier : shakeI;
 
-        Collider2D[] hits = Physics2D.OverlapCircleAll(attackPoint.position, range, enemyLayer);
-        if (hits.Length == 0) return;
+        Transform origin = attackPoint != null ? attackPoint : transform;
+        Collider2D[] hits = Physics2D.OverlapCircleAll(origin.position, range, enemyLayer);
+        if (hits.Length == 0)
+        {
+            Debug.Log($"[MeleeWeapon] ApplyHit: nenhum inimigo na hitbox | type={type} range={range} origin={origin.position}");
+            return;
+        }
 
-        // Direção média de todos os inimigos atingidos — usada pelo shake direcional.
-        // Com múltiplos hits simultâneos, a média evita que a câmera favoreça só um deles.
+        Debug.Log($"[MeleeWeapon] ApplyHit: {hits.Length} alvo(s) atingido(s) | type={type} step={comboStep} damage={damage}");
+
         Vector2 avgHitDir = Vector2.zero;
         foreach (Collider2D h in hits)
-            avgHitDir += ((Vector2)h.transform.position - (Vector2)attackPoint.position);
+            avgHitDir += ((Vector2)h.transform.position - (Vector2)origin.position);
         if (avgHitDir != Vector2.zero) avgHitDir.Normalize();
 
-        // ── 1. Hitlag — freeze do Rigidbody do inimigo ───────────────────────
-        // Counter não tem hitlag: o stagger já gerencia o freeze do inimigo.
         float hitlagDur = isCounter ? 0f
                         : type == AttackType.Light    ? lightHitlagPerStep[step]
                         : type == AttackType.Heavy    ? heavyHitlagDuration
@@ -771,13 +759,10 @@ public class MeleeWeapon : MonoBehaviour
             Rigidbody2D enemyRb = hit.GetComponent<Rigidbody2D>() ?? hit.GetComponentInParent<Rigidbody2D>();
             if (enemyRb != null && hitlagDur > 0f)
             {
-                // Direção do knockback: do player para o inimigo, normalizada.
-                // Usa attackPoint como origem para ser mais preciso que transform.position.
-                Vector2 knockDir = ((Vector2)hit.transform.position - (Vector2)attackPoint.position).normalized;
+                Vector2 knockDir = ((Vector2)hit.transform.position - (Vector2)origin.position).normalized;
                 StartCoroutine(HitlagRoutine(enemyRb, hitlagDur, knockDir, type));
             }
 
-            // ── Knockback do counter — direto, sem hitlag ─────────────────────
             if (isCounter)
             {
                 Rigidbody2D counterRb = hit.GetComponent<Rigidbody2D>() ?? hit.GetComponentInParent<Rigidbody2D>();
@@ -789,27 +774,23 @@ public class MeleeWeapon : MonoBehaviour
                 }
             }
 
-            // ── 2. ImpactFlash — frame branco no inimigo ─────────────────────
             var hitFlash = hit.GetComponent<HitFlash>() ?? hit.GetComponentInParent<HitFlash>();
             hitFlash?.ImpactFlash();
 
-            // VFX de hit no ponto de contato com o inimigo
-            string impactType = isCounter  ? "counter"
+            string impactType = isCounter         ? "counter"
                               : type == AttackType.Finisher ? "finisher"
                               : type == AttackType.Heavy    ? "heavy"
                               : "light";
             Vector2 hitPos = hit.transform.position;
-            Vector2 hitDir = ((Vector2)hit.transform.position - (Vector2)attackPoint.position).normalized;
+            Vector2 hitDir = ((Vector2)hit.transform.position - (Vector2)origin.position).normalized;
             vfxManager?.SpawnHitImpact(impactType, hitPos, hitDir, isCounter, comboStep);
 
-            // Sangue — desabilitado no counter (usa VFX de impacto próprio)
             if (!isCounter)
             {
                 bool isHeavyHit = type == AttackType.Heavy || type == AttackType.Finisher;
                 vfxManager?.SpawnBlood(hit.transform, isHeavyHit, hitDir);
             }
 
-            // ── Dano e poise ──────────────────────────────────────────────────
             if (type == AttackType.Heavy)
             {
                 var playerDmg  = hit.GetComponent<PlayerHealth>() ?? hit.GetComponentInParent<PlayerHealth>();
@@ -828,16 +809,9 @@ public class MeleeWeapon : MonoBehaviour
             enemyPoise?.ReceivePoiseHit(poiseDmg);
         }
 
-        // ── 3. HitStop — freeze global de timeScale ───────────────────────────
         HitStop.Instance?.DoHitStop(finalStop);
-
-        // ── 4. CameraShake — adiado para APÓS o HitStop terminar ─────────────
-        // Chamar Shake durante timeScale=0 é invisível: a câmera treme enquanto
-        // tudo está congelado. ShakeAfterHitStop aguarda o freeze e só então treme.
         StartCoroutine(ShakeAfterHitStop(finalShakeI, shakeD, avgHitDir, shakeDirectionBias));
 
-        // ── 5. CameraImpulse — micro zoom em todos os golpes ─────────────────
-        // Counter já chama CounterZoom() em AttackRoutine — não duplica aqui.
         if (!isCounter)
         {
             float zoom = type == AttackType.Light    ? lightZoomAmount
@@ -850,11 +824,6 @@ public class MeleeWeapon : MonoBehaviour
 
     // ─── Shake adiado ─────────────────────────────────────────────────────────
 
-    /// <summary>
-    /// Aguarda o HitStop terminar antes de tremer a câmera.
-    /// Durante timeScale=0 a câmera treme mas o freeze cobre tudo — o player
-    /// não vê nada. O shake deve ocorrer quando a imagem volta a se mover.
-    /// </summary>
     private IEnumerator ShakeAfterHitStop(float intensity, float duration, Vector2 direction, float bias)
     {
         while (HitStop.Instance != null && HitStop.Instance.IsActive)
@@ -865,27 +834,6 @@ public class MeleeWeapon : MonoBehaviour
 
     // ─── Hitlag ───────────────────────────────────────────────────────────────
 
-    /// <summary>
-    /// Freeze do Rigidbody do inimigo por <paramref name="duration"/> segundos reais,
-    /// seguido de um impulso de knockback com easing EaseOut quadrático.
-    ///
-    /// ── ORDEM DE EVENTOS ──────────────────────────────────────────────────────
-    ///
-    ///   1. Zera velocidade e gravidade do inimigo (freeze visual limpo)
-    ///   2. Aguarda hitlag duration (WaitForSecondsRealtime — ignora HitStop)
-    ///   3. Restaura gravidade
-    ///   4. Aplica knockback: velocidade inicial alta decaindo em curva EaseOut
-    ///      ao longo de knockbackDuration segundos
-    ///
-    /// O knockback começa APÓS o freeze para que o "pop" seja visível — durante
-    /// timeScale=0 qualquer movimento é invisível de qualquer forma.
-    ///
-    /// <paramref name="knockDir"/> deve ser normalizado (player → inimigo).
-    /// </summary>
-    /// <summary>
-    /// Knockback exclusivo do counter — sem freeze prévio (hitlag = 0 no counter).
-    /// Aplica impulso com easing EaseOut quadrático, mesmo padrão do HitlagRoutine.
-    /// </summary>
     private IEnumerator CounterKnockbackRoutine(Rigidbody2D enemyRb, Vector2 knockVec)
     {
         if (enemyRb == null) yield break;
@@ -894,11 +842,9 @@ public class MeleeWeapon : MonoBehaviour
         while (elapsed < counterKnockbackDuration)
         {
             if (enemyRb == null) yield break;
-
             elapsed += Time.deltaTime;
             float t     = Mathf.Clamp01(elapsed / counterKnockbackDuration);
-            float eased = 1f - (t * t); // EaseOut quadrático: forte no início, suave no fim
-
+            float eased = 1f - (t * t);
             enemyRb.linearVelocity = knockVec * (counterKnockbackForce * eased);
             yield return null;
         }
@@ -911,8 +857,7 @@ public class MeleeWeapon : MonoBehaviour
     {
         if (enemyRb == null) yield break;
 
-        float savedGravity = enemyRb.gravityScale;
-
+        float savedGravity     = enemyRb.gravityScale;
         enemyRb.gravityScale   = 0f;
         enemyRb.linearVelocity = Vector2.zero;
 
@@ -921,30 +866,20 @@ public class MeleeWeapon : MonoBehaviour
         if (enemyRb == null) yield break;
         enemyRb.gravityScale = savedGravity;
 
-        // ── Knockback com easing ──────────────────────────────────────────────
         if (!knockbackEnabled) yield break;
 
-        float force    = type == AttackType.Light ? lightKnockbackForce
-                       : type == AttackType.Heavy ? heavyKnockbackForce
-                       : finisherKnockbackForce;
-        float kDuration = type == AttackType.Light ? lightKnockbackDuration
-                        : type == AttackType.Heavy ? heavyKnockbackDuration
-                        : finisherKnockbackDuration;
+        float force     = type == AttackType.Light ? lightKnockbackForce    : type == AttackType.Heavy ? heavyKnockbackForce    : finisherKnockbackForce;
+        float kDuration = type == AttackType.Light ? lightKnockbackDuration : type == AttackType.Heavy ? heavyKnockbackDuration : finisherKnockbackDuration;
 
-        // Adiciona uma fração vertical para o leve "pop" de levantamento.
-        // knockDir.y já pode ter componente vertical se o inimigo estiver em ângulo;
-        // knockbackVerticalFraction complementa com um boost fixo pra cima.
         Vector2 knockVec = new Vector2(knockDir.x, knockDir.y + knockbackVerticalFraction).normalized;
 
         float elapsed = 0f;
         while (elapsed < kDuration)
         {
             if (enemyRb == null) yield break;
-
             elapsed += Time.deltaTime;
             float t     = Mathf.Clamp01(elapsed / kDuration);
-            float eased = 1f - (t * t); // EaseOut quadrático: forte no início, suave no fim
-
+            float eased = 1f - (t * t);
             enemyRb.linearVelocity = knockVec * (force * eased);
             yield return null;
         }
@@ -955,35 +890,16 @@ public class MeleeWeapon : MonoBehaviour
 
     // ─── Anticipation squash ──────────────────────────────────────────────────
 
-    /// <summary>
-    /// Squash rápido no sprite do player antes do hit.
-    /// Comprime X e estica Y proporcionalmente por metade da duração,
-    /// depois retorna ao scale original na outra metade.
-    ///
-    /// Usa WaitForSecondsRealtime para não ser afetado pelo HitStop (timeScale=0).
-    /// O scale original é capturado no início e restaurado no final — seguro
-    /// mesmo se outra coroutine interromper antes do fim.
-    ///
-    /// Chamado em AttackRoutine imediatamente após o trigger da animação,
-    /// rodando em paralelo com a fase de startup (não bloqueia o fluxo principal).
-    /// </summary>
     private IEnumerator AnticipationSquash(AttackType type)
     {
-        float scaleX   = type == AttackType.Light ? lightAnticipationScaleX
-                       : type == AttackType.Heavy ? heavyAnticipationScaleX
-                       : finisherAnticipationScaleX;
-        float duration = type == AttackType.Light ? lightAnticipationDuration
-                       : type == AttackType.Heavy ? heavyAnticipationDuration
-                       : finisherAnticipationDuration;
+        float scaleX   = type == AttackType.Light ? lightAnticipationScaleX    : type == AttackType.Heavy ? heavyAnticipationScaleX    : finisherAnticipationScaleX;
+        float duration = type == AttackType.Light ? lightAnticipationDuration  : type == AttackType.Heavy ? heavyAnticipationDuration  : finisherAnticipationDuration;
 
-        Transform t    = transform.parent != null ? transform.parent : transform;
-        Vector3 orig   = t.localScale;
+        Transform t  = transform.parent != null ? transform.parent : transform;
+        Vector3 orig = t.localScale;
 
-        // Mantém o sinal do scale original para sprites flipados (scaleX negativo)
         float signX  = Mathf.Sign(orig.x);
         float signY  = Mathf.Sign(orig.y);
-
-        // Calcula o Y inverso para conservar volume aproximado
         float scaleY = 1f + (1f - scaleX) * 0.6f;
 
         Vector3 squashed = new Vector3(
@@ -992,10 +908,9 @@ public class MeleeWeapon : MonoBehaviour
             orig.z
         );
 
-        float half = duration * 0.5f;
+        float half    = duration * 0.5f;
         float elapsed = 0f;
 
-        // Ida: orig → squashed
         while (elapsed < half)
         {
             elapsed += Time.unscaledDeltaTime;
@@ -1005,7 +920,6 @@ public class MeleeWeapon : MonoBehaviour
 
         elapsed = 0f;
 
-        // Volta: squashed → orig
         while (elapsed < half)
         {
             elapsed += Time.unscaledDeltaTime;
@@ -1020,12 +934,12 @@ public class MeleeWeapon : MonoBehaviour
 
     void OnDrawGizmosSelected()
     {
-        if (!attackPoint) return;
+        Transform origin = attackPoint != null ? attackPoint : transform;
         Gizmos.color = new Color(1f, 0.8f, 0.8f, 0.4f);
-        Gizmos.DrawWireSphere(attackPoint.position, lightAttackRange);
+        Gizmos.DrawWireSphere(origin.position, lightAttackRange);
         Gizmos.color = new Color(1f, 0.4f, 0f, 0.5f);
-        Gizmos.DrawWireSphere(attackPoint.position, heavyAttackRange);
+        Gizmos.DrawWireSphere(origin.position, heavyAttackRange);
         Gizmos.color = new Color(1f, 0f, 0f, 0.7f);
-        Gizmos.DrawWireSphere(attackPoint.position, finisherAttackRange);
+        Gizmos.DrawWireSphere(origin.position, finisherAttackRange);
     }
 }

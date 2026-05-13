@@ -2,6 +2,20 @@ using System.Collections;
 using UnityEngine;
 using UnityEngine.InputSystem;
 
+/// <summary>
+/// PlayerBehavior — controla movimento, pulo, dash e flags de estado do player.
+///
+/// ── LOGS DE DIAGNÓSTICO ──────────────────────────────────────────────────────
+///
+///  Filtre o Console por "[PlayerBehavior]" para ver:
+///    - Mudanças nas flags isLocked / isAttacking / isInAttackStartupOrActive
+///    - Início e fim de cada Dash
+///    - Aviso quando ApplyMovement é chamado com flags inconsistentes
+///
+///  Logs de movimento frame-a-frame estão desabilitados por padrão (muito verbosos).
+///  Para ativá-los, ligue a flag debugLogMovement no Inspector.
+///
+/// </summary>
 [RequireComponent(typeof(Rigidbody2D))]
 public class PlayerBehavior : MonoBehaviour
 {
@@ -46,6 +60,12 @@ public class PlayerBehavior : MonoBehaviour
     [Tooltip("Layer dos inimigos — a colisão física entre player e inimigo será ignorada")]
     [SerializeField] private LayerMask enemyPhysicsLayer;
 
+    [Header("Diagnóstico")]
+    [Tooltip("Loga no console cada mudança nas flags de combate (isLocked, isAttacking, isInAttackStartupOrActive).")]
+    [SerializeField] private bool debugLogCombatFlags = true;
+    [Tooltip("Loga a velocidade aplicada a cada FixedUpdate. MUITO verboso — use só para investigar bugs de movimento.")]
+    [SerializeField] private bool debugLogMovement = false;
+
     private float horizontalInput;
     private float horinzontalIsLocked;
     private bool  _isGrounded;
@@ -59,17 +79,56 @@ public class PlayerBehavior : MonoBehaviour
     private float _facingDirection = 1f;
     private Vector3 originalScale;
 
-    // FIX DEFEND — cache do estado anterior para detectar release
-    // mesmo quando Update estava travado no frame do evento.
+    // Cache do estado anterior para detectar release mesmo quando Update estava travado.
     private bool _defendWasHeld;
 
-    [HideInInspector] public bool isLocked;
-    [HideInInspector] public bool isAttacking;
+    // Backing fields com notificação de mudança para diagnóstico
+    private bool _isLocked;
+    private bool _isAttacking;
+    private bool _isInAttackStartupOrActive;
+
+    [HideInInspector]
+    public bool isLocked
+    {
+        get => _isLocked;
+        set
+        {
+            if (_isLocked == value) return;
+            _isLocked = value;
+            if (debugLogCombatFlags)
+                Debug.Log($"[PlayerBehavior] isLocked = {value} | frame={Time.frameCount}");
+        }
+    }
+
+    [HideInInspector]
+    public bool isAttacking
+    {
+        get => _isAttacking;
+        set
+        {
+            if (_isAttacking == value) return;
+            _isAttacking = value;
+            if (debugLogCombatFlags)
+                Debug.Log($"[PlayerBehavior] isAttacking = {value} | frame={Time.frameCount}");
+        }
+    }
+
     /// <summary>
-    /// Setado por MeleeWeapon: true durante startup+active (trava movimento),
+    /// Setado por MeleeWeapon: true durante startup+active (trava movimento total),
     /// false durante recovery (permite movimento reduzido).
     /// </summary>
-    [HideInInspector] public bool isInAttackStartupOrActive;
+    [HideInInspector]
+    public bool isInAttackStartupOrActive
+    {
+        get => _isInAttackStartupOrActive;
+        set
+        {
+            if (_isInAttackStartupOrActive == value) return;
+            _isInAttackStartupOrActive = value;
+            if (debugLogCombatFlags)
+                Debug.Log($"[PlayerBehavior] isInAttackStartupOrActive = {value} | frame={Time.frameCount}");
+        }
+    }
 
     private PlayerHealth _health;
     private CharacterAnimationController animController;
@@ -97,10 +156,10 @@ public class PlayerBehavior : MonoBehaviour
             .With("Positive", "<Keyboard>/d")
             .With("Positive", "<Keyboard>/rightArrow");
 
-        jumpAction   = new InputAction("Jump", InputActionType.Button);
+        jumpAction   = new InputAction("Jump",   InputActionType.Button);
         jumpAction.AddBinding("<Keyboard>/space");
 
-        dashAction   = new InputAction("Dash", InputActionType.Button);
+        dashAction   = new InputAction("Dash",   InputActionType.Button);
         dashAction.AddBinding("<Keyboard>/leftShift");
 
         defendAction = new InputAction("Defend", InputActionType.Button);
@@ -109,6 +168,14 @@ public class PlayerBehavior : MonoBehaviour
 
     void Start()
     {
+        // ── Diagnóstico de setup ──────────────────────────────────────────────
+        if (groundCheck == null)
+            Debug.LogError("[PlayerBehavior] groundCheck não atribuído! O player nunca detectará o chão.");
+
+        if (animController == null)
+            Debug.LogWarning("[PlayerBehavior] CharacterAnimationController não encontrado. " +
+                             "Animações não serão atualizadas.");
+
         int playerLayerIndex = gameObject.layer;
         for (int i = 0; i < 32; i++)
         {
@@ -118,6 +185,9 @@ public class PlayerBehavior : MonoBehaviour
                 Debug.Log($"[PlayerBehavior] Colisão física ignorada entre layers {playerLayerIndex} e {i}.");
             }
         }
+
+        Debug.Log($"[PlayerBehavior] Inicializado em '{gameObject.name}'. " +
+                  $"moveSpeed={moveSpeed} jumpForce={jumpForce} dashSpeed={dashSpeed}");
     }
 
     void OnEnable()
@@ -138,17 +208,14 @@ public class PlayerBehavior : MonoBehaviour
 
     void Update()
     {
-        // FIX DEFEND — lê o input de defesa ANTES do guard isLocked.
-        // Isso garante que press e release sejam processados mesmo durante
-        // hurt stun ou qualquer outro estado de lock, eliminando a janela
-        // onde StopDefend nunca era chamado se o botão fosse solto enquanto
-        // o player estava travado.
+        // Lê input de defesa ANTES do guard isLocked.
+        // Garante que press e release sejam processados mesmo durante hurt stun.
         HandleDefendInput();
 
-        if (isLocked)
+        if (_isLocked)
         {
-            // FIX HURT — quando travado, limpa o input horizontal para evitar
-            // que o valor acumulado seja aplicado assim que isLocked virar false.
+            // Limpa input horizontal durante lock — evita que valor acumulado
+            // seja aplicado assim que isLocked virar false.
             horizontalInput = 0f;
             return;
         }
@@ -162,21 +229,16 @@ public class PlayerBehavior : MonoBehaviour
         UpdateFacing();
     }
 
-    // FIX DEFEND — separado de HandleDefend original.
-    // Usa cache _defendWasHeld para comparação frame a frame em vez de depender
-    // exclusivamente de WasReleasedThisFrame, que é perdido quando Update estava
-    // bloqueado no frame do evento de release.
     private void HandleDefendInput()
     {
         if (_health == null) return;
 
         bool heldNow = defendAction.IsPressed();
 
-        // Press: inicia defesa se não está em dash
         if (defendAction.WasPressedThisFrame() && !_isDashing)
             _health.StartDefend();
 
-        // Release: detecta soltar o botão comparando com o frame anterior.
+        // Detecta soltar o botão comparando com o frame anterior.
         // WasReleasedThisFrame falhava quando Update era pulado por isLocked.
         if (_defendWasHeld && !heldNow)
             _health.StopDefend();
@@ -232,6 +294,7 @@ public class PlayerBehavior : MonoBehaviour
         playerRb.AddForce(Vector2.up * jumpForce, ForceMode2D.Impulse);
         _isJumping  = true;
         _isGrounded = false;
+        Debug.Log($"[PlayerBehavior] Jump executado | horizontalInput={horizontalInput:F2}");
     }
 
     private void HandleDash()
@@ -243,7 +306,7 @@ public class PlayerBehavior : MonoBehaviour
 
     void FixedUpdate()
     {
-        if (isLocked || _isDashing) return;
+        if (_isLocked || _isDashing) return;
 
         ApplyMovement();
         ApplyGravityMultiplier();
@@ -254,21 +317,26 @@ public class PlayerBehavior : MonoBehaviour
         float input = _isGrounded ? horizontalInput : horinzontalIsLocked;
 
         float multiplier;
-        if (isInAttackStartupOrActive)
-            multiplier = 0f;                          // trava total durante startup e active
-        else if (isAttacking)
-            multiplier = attackRecoveryMovementMultiplier; // deslizamento mínimo no recovery
+        if (_isInAttackStartupOrActive)
+            multiplier = 0f;
+        else if (_isAttacking)
+            multiplier = attackRecoveryMovementMultiplier;
         else
             multiplier = 1f;
 
-        // Quando travado, zera a velocidade horizontal em vez de só não acumular input —
-        // impede que momento residual de antes do ataque continue deslizando o player.
-        if (isInAttackStartupOrActive && _isGrounded)
+        // Quando em startup/active, zera a velocidade horizontal — impede que
+        // momento residual de antes do ataque continue deslizando o player.
+        if (_isInAttackStartupOrActive && _isGrounded)
             playerRb.linearVelocity = new Vector2(0f, playerRb.linearVelocity.y);
         else
             playerRb.linearVelocity = new Vector2(input * moveSpeed * multiplier, playerRb.linearVelocity.y);
 
         animController?.SetSpeed(Mathf.Abs(playerRb.linearVelocity.x));
+
+        if (debugLogMovement)
+            Debug.Log($"[PlayerBehavior] ApplyMovement | input={input:F2} mult={multiplier:F2} " +
+                      $"vel={playerRb.linearVelocity.x:F2} | " +
+                      $"locked={_isLocked} attacking={_isAttacking} startupActive={_isInAttackStartupOrActive}");
     }
 
     private void ApplyGravityMultiplier()
@@ -291,6 +359,9 @@ public class PlayerBehavior : MonoBehaviour
         _isDashInvincible = true;
         dashCooldownTimer = dashCooldown;
 
+        Debug.Log($"[PlayerBehavior] Dash INÍCIO | dir={(_isDashing ? "calculando" : "?")} " +
+                  $"horizontalInput={horizontalInput:F2} facing={_facingDirection}");
+
         // Dash cancela defesa e qualquer trava de ataque
         if (_health != null && _health.IsDefending)
             _health.StopDefend();
@@ -306,6 +377,8 @@ public class PlayerBehavior : MonoBehaviour
         playerRb.gravityScale   = 0f;
         playerRb.linearVelocity = new Vector2(dir * dashSpeed, 0f);
 
+        Debug.Log($"[PlayerBehavior] Dash velocidade aplicada: {dir * dashSpeed:F2}");
+
         yield return new WaitForSeconds(dashDuration);
 
         playerRb.gravityScale   = originalGravity;
@@ -313,6 +386,8 @@ public class PlayerBehavior : MonoBehaviour
 
         _isDashing        = false;
         _isDashInvincible = false;
+
+        Debug.Log("[PlayerBehavior] Dash FIM");
     }
 
     private void UpdateFacing()

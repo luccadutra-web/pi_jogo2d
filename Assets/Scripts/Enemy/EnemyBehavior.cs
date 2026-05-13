@@ -96,6 +96,11 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
     private float _pendingRange;
     private int   _pendingDamage;
     private bool  _pendingIsHeavy;
+    private float _playerUntouchableTimer;   // segurança: desiste de esperar após N segundos
+
+    // Cache do PlayerBehavior — consultado antes de cada ataque para não
+    // interromper o player no meio de um combo ou durante i-frames de dash.
+    private PlayerBehavior _playerBehavior;
 
     private void Log(string msg) { if (debugAttack) Debug.Log($"[ENEMY {name}] {msg}"); }
 
@@ -115,7 +120,10 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
 
         GameObject playerObj = GameObject.FindGameObjectWithTag("Player");
         if (playerObj != null)
-            playerTransform = playerObj.transform;
+        {
+            playerTransform  = playerObj.transform;
+            _playerBehavior  = playerObj.GetComponent<PlayerBehavior>();
+        }
         else
             Debug.LogError("[EnemyBehavior] Player não encontrado — verifique a tag 'Player'.");
 
@@ -209,6 +217,19 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
         rb.linearVelocity = new Vector2(0f, rb.linearVelocity.y);
         animController?.SetSpeed(0f);
 
+        // Não atacar enquanto o player estiver em startup/active de um combo
+        // ou invencível pelo dash — evita que o inimigo reaja no meio de uma janela
+        // que deveria ser exclusivamente do player.
+        if (IsPlayerUntouchable())
+        {
+            _playerUntouchableTimer += Time.deltaTime;
+            if (_playerUntouchableTimer < 1.5f) return;
+            // Segurança: se o player ficou travado em isInAttackStartupOrActive
+            // por mais de 1.5s, o inimigo ignora a espera e ataca normalmente.
+            Log("Timeout de espera pelo player — forçando ataque");
+        }
+        _playerUntouchableTimer = 0f;
+
         if (dist <= heavyTriggerRange && heavyCooldownTimer <= 0f)
         {
             Log("Escolheu HEAVY");
@@ -219,6 +240,19 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
             Log("Escolheu LIGHT");
             StartCoroutine(AttackRoutine(isHeavy: false));
         }
+    }
+
+    /// <summary>
+    /// Retorna true se o player está numa janela em que o inimigo não deve reagir:
+    ///   • isInAttackStartupOrActive — player no meio de um swing (startup ou active)
+    ///   • IsDashInvincible          — player em i-frames de dash
+    /// O inimigo pode estar em chase ou já no estado Attack quando isso acontece —
+    /// em ambos os casos, simplesmente segura o ataque e tenta de novo no próximo frame.
+    /// </summary>
+    private bool IsPlayerUntouchable()
+    {
+        if (_playerBehavior == null) return false;
+        return _playerBehavior.isInAttackStartupOrActive || _playerBehavior.IsDashInvincible;
     }
 
     private IEnumerator AttackRoutine(bool isHeavy)
@@ -242,6 +276,11 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
 
         animController?.TriggerAnimation(isHeavy ? TriggerHeavyAtk : TriggerLightAtk);
 
+        if (isHeavy)
+            GetComponent<EnemyAudio>()?.OnEnemyAttackHeavy();
+        else
+            GetComponent<EnemyAudio>()?.OnEnemyAttackLight();
+
         if (isHeavy && heavyTelegraphVFX != null)
             heavyTelegraphVFX.SetActive(true);
 
@@ -252,7 +291,7 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
         while (elapsed < startup)
         {
             if (!_isPerformingAttack || state == State.Dead) yield break;
-            elapsed += Time.deltaTime;
+            elapsed += Time.unscaledDeltaTime; // não trava durante HitStop
             yield return null;
         }
 
@@ -274,7 +313,7 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
         while (elapsed < activeTime + recovery)
         {
             if (!_isPerformingAttack || state == State.Dead) yield break;
-            elapsed += Time.deltaTime;
+            elapsed += Time.unscaledDeltaTime; // não trava durante HitStop
             yield return null;
         }
 
@@ -334,8 +373,12 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
         currentHealth -= damage;
         Log($"TakeDamage | dmg={damage} | hp={currentHealth}/{maxHealth}");
 
-        animController?.TriggerAnimation(TriggerHit);
+        animController?.SetTriggerDirect(TriggerHit);
         GetComponent<HitFlash>()?.Flash();
+
+        // VFX e áudio de hurt — integrados ao VfxManager e EnemyAudio do projeto
+        VfxManager.Instance?.SpawnEnemyHurt(transform.position);
+        GetComponent<EnemyAudio>()?.OnEnemyHurt();
 
         // Repassa o dano de postura para o componente EnemyPoise (se existir).
         // O dano de poise é determinado pelo tipo de ataque que causou o dano —
@@ -370,6 +413,7 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
         // CrossFade com transitionDuration=0 garante que o Stagger começa no mesmo frame,
         // mesmo que o clip de ataque ainda esteja rodando com exit time habilitado.
         animController?.ForceState(TriggerStagger);
+        GetComponent<EnemyAudio>()?.OnEnemyStagger();
 
         StartCoroutine(StaggerRoutine(staggerDuration));
     }
@@ -386,6 +430,8 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
             heavyTelegraphVFX.SetActive(false);
 
         hitFlash?.PoiseBreakFlash();
+        VfxManager.Instance?.SpawnPoiseBreak(transform.position);
+        GetComponent<EnemyAudio>()?.OnEnemyStagger();
 
         StopAllCoroutines();
         animController?.ForceState(TriggerStagger);
@@ -399,7 +445,7 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
     private IEnumerator HurtRoutine()
     {
         state = State.Hurt;
-        yield return new WaitForSeconds(0.25f);
+        yield return new WaitForSecondsRealtime(0.25f); // não trava durante HitStop
         if (state != State.Dead) state = State.Chase;
     }
 
@@ -412,7 +458,10 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
         // garantindo transição imediata sem depender de exit time no Animator.
         // Não dispara TriggerAnimation aqui para não reiniciar a animação.
 
-        yield return new WaitForSeconds(duration);
+        // WaitForSecondsRealtime em vez de WaitForSeconds — o stagger não pode
+        // ficar preso durante um HitStop (timeScale=0), pois o inimigo nunca
+        // sairia do estado Hurt e ficaria travado após o freeze terminar.
+        yield return new WaitForSecondsRealtime(duration);
 
         isStaggered = false;
         if (state != State.Dead) state = State.Chase;
@@ -429,8 +478,11 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
             heavyTelegraphVFX.SetActive(false);
 
         animController?.SetSpeed(0f);
-        animController?.TriggerAnimation(TriggerDie);
-        
+        animController?.SetTriggerDirect(TriggerDie);
+
+        VfxManager.Instance?.SpawnEnemyHurt(transform.position);
+        VfxManager.Instance?.SpawnBlood(transform, isHeavy: true);
+        GetComponent<EnemyAudio>()?.OnEnemyDeath();
 
         StartCoroutine(DeathRoutine());
         PlayerSpecialGauge.Instance?.AddKill();
@@ -459,8 +511,11 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
 
     private void UpdateFacing(float dir)
     {
+        float newSign = Mathf.Sign(dir);
+        if (Mathf.Approximately(newSign, Mathf.Sign(transform.localScale.x))) return;
+
         transform.localScale = new Vector3(
-            Mathf.Abs(transform.localScale.x) * Mathf.Sign(dir),
+            Mathf.Abs(transform.localScale.x) * newSign,
             transform.localScale.y,
             transform.localScale.z
         );
