@@ -378,7 +378,6 @@ public class PlayerHealth : MonoBehaviour
 
         StopDefend();
         GetComponent<MeleeWeapon>()?.CancelAttack();
-        GetComponentInChildren<MeleeWeapon>()?.CancelAttack();
         animController?.SetTriggerDirect("GuardCrush");
         hitFlash?.Flash();
         OnGuardCrush?.Invoke();
@@ -428,6 +427,7 @@ public class PlayerHealth : MonoBehaviour
         _counterWindowTimer = counterWindowDuration;
         if (debugParry) Debug.Log($"[COUNTER] Janela de counter aberta | {counterWindowDuration}s");
 
+        AudioManager.Instance?.PlaySFX("parry_success", 1f);
         CameraImpulse.Instance?.ParryZoom();
         OnParrySuccess?.Invoke();
 
@@ -469,7 +469,6 @@ public class PlayerHealth : MonoBehaviour
     private IEnumerator HurtRoutine()
     {
         GetComponent<MeleeWeapon>()?.CancelAttack();
-        GetComponentInChildren<MeleeWeapon>()?.CancelAttack();
 
         behavior.isLocked    = true;
         behavior.isAttacking = false;
@@ -486,7 +485,6 @@ public class PlayerHealth : MonoBehaviour
         if (hurtCoroutine != null) { StopCoroutine(hurtCoroutine); hurtCoroutine = null; }
 
         GetComponent<MeleeWeapon>()?.CancelAttack();
-        GetComponentInChildren<MeleeWeapon>()?.CancelAttack();
 
         // Congela o Rigidbody completamente durante a animação de morte.
         // Sem isso o player cai pelo chão enquanto a animação de Die não existe.

@@ -22,10 +22,10 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
     [Header("Ataque leve")]
     [SerializeField] private float lightAttackRange = 1.5f;
     [SerializeField] private int   lightDamage      = 1;
-    [SerializeField] private float lightStartup     = 0.20f;
+    [SerializeField] private float lightStartup     = 0.40f;  // era 0.20 — mais tempo para o player reagir
     [SerializeField] private float lightActiveTime  = 0.10f;
-    [SerializeField] private float lightRecovery    = 0.30f;
-    [SerializeField] private float lightCooldown    = 1.2f;
+    [SerializeField] private float lightRecovery    = 0.50f;  // era 0.30 — mais punível
+    [SerializeField] private float lightCooldown    = 1.8f;   // era 1.20 — menos spam
 
     // Dano de postura causado pelo light attack ao player (se o player tiver EnemyPoise no futuro)
     // e recebido pelo inimigo quando é acertado. Configurável por tipo de inimigo.
@@ -96,7 +96,8 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
     private float _pendingRange;
     private int   _pendingDamage;
     private bool  _pendingIsHeavy;
-    private float _playerUntouchableTimer;   // segurança: desiste de esperar após N segundos
+    private float _playerUntouchableTimer;
+    private Coroutine _hurtCoroutine;  // controla HurtRoutine para evitar múltiplas instâncias
 
     // Cache do PlayerBehavior — consultado antes de cada ataque para não
     // interromper o player no meio de um combo ou durante i-frames de dash.
@@ -223,9 +224,9 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
         if (IsPlayerUntouchable())
         {
             _playerUntouchableTimer += Time.deltaTime;
-            if (_playerUntouchableTimer < 1.5f) return;
+            if (_playerUntouchableTimer < 3.0f) return;  // era 1.5s — dá mais espaço ao combo do player
             // Segurança: se o player ficou travado em isInAttackStartupOrActive
-            // por mais de 1.5s, o inimigo ignora a espera e ataca normalmente.
+            // por mais de 3s, o inimigo ignora a espera e ataca normalmente.
             Log("Timeout de espera pelo player — forçando ataque");
         }
         _playerUntouchableTimer = 0f;
@@ -389,7 +390,8 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
 
         if (currentHealth <= 0) { Die(); return; }
 
-        StartCoroutine(HurtRoutine());
+        if (_hurtCoroutine != null) StopCoroutine(_hurtCoroutine);
+        _hurtCoroutine = StartCoroutine(HurtRoutine());
     }
 
     public void TakeDamage(int damage) => TakeDamage(damage, default);
@@ -445,8 +447,9 @@ public class EnemyBehavior : MonoBehaviour, IDamageable, IStaggerable
     private IEnumerator HurtRoutine()
     {
         state = State.Hurt;
-        yield return new WaitForSecondsRealtime(0.25f); // não trava durante HitStop
+        yield return new WaitForSecondsRealtime(0.4f); // era 0.25s — janela maior para o combo do player
         if (state != State.Dead) state = State.Chase;
+        _hurtCoroutine = null;
     }
 
     private IEnumerator StaggerRoutine(float duration)

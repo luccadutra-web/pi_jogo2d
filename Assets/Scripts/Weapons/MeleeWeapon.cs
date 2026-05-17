@@ -316,8 +316,21 @@ public class MeleeWeapon : MonoBehaviour
 
     public void OnComboWindowOpen()
     {
-        Debug.Log($"[MeleeWeapon] Event: OnComboWindowOpen | step={comboStep}");
+        Debug.Log($"[MeleeWeapon] Event: OnComboWindowOpen | step={comboStep} | isAttacking={isAttacking} | lightBuffered={lightBuffered}");
         _animEventComboOpen = true;
+
+        // Se o event chegou tarde (step já resetado mas há input bufferizado),
+        // consome o buffer diretamente — garante que o combo avança mesmo com
+        // Animation Events ligeiramente fora de sincronia com o código.
+        if (!isAttacking && lightBuffered)
+        {
+            Debug.Log("[MeleeWeapon] OnComboWindowOpen: event tardio — consumindo buffer diretamente.");
+            comboWindowOpen = false;
+            lightBuffered   = false;
+            lightBufferTimer = 0f;
+            comboStep = 0;
+            ExecuteLightAttack();
+        }
     }
 
     public void OnComboWindowClose()
@@ -504,9 +517,9 @@ public class MeleeWeapon : MonoBehaviour
         bool isCounter = health != null && health.IsCounterWindowOpen;
         if (isCounter)
         {
-            HitStop.Instance?.DoSlowMotion(counterSlowScale, counterSlowHold, counterSlowRampUp);
-            float slowTotal = counterSlowHold + counterSlowRampUp;
-            yield return new WaitForSecondsRealtime(slowTotal);
+            // Dispara o counter imediatamente — sem wait de slow motion aqui.
+            // O slow já foi aplicado pelo ExecuteParry(); adicionar um segundo
+            // WaitForSecondsRealtime travava o player sem motivo aparente.
             animController?.SetTriggerDirect(TriggerCounter);
             CameraImpulse.Instance?.CounterZoom();
             stateName = StateCounter;
@@ -614,6 +627,19 @@ public class MeleeWeapon : MonoBehaviour
         {
             ApplyHit(type, isCounter);
             health?.ConsumeCounterWindow();
+
+            // Counter é ataque único — encerra a rotina imediatamente após o hit,
+            // sem aguardar recovery nem combo window. Libera o player na hora.
+            if (behavior != null)
+            {
+                behavior.isInAttackStartupOrActive = false;
+                behavior.isAttacking               = false;
+            }
+            isAttacking      = false;
+            _attackCoroutine = null;
+            comboStep        = 0;
+            animController?.ForceState(StateIdle);
+            yield break;
         }
 
         // Libera movimento imediatamente após o active.
@@ -649,10 +675,13 @@ public class MeleeWeapon : MonoBehaviour
                 elapsed += Time.unscaledDeltaTime;
                 if (elapsed >= timeoutComboOpen)
                 {
-                    Debug.LogWarning($"[MeleeWeapon] TIMEOUT aguardando OnComboWindowOpen " +
-                                     $"(step={comboStep} state={stateName}). " +
-                                     $"Verifique o Animation Event no clipe.");
-                    break; // continua: trata como se a janela abrisse agora
+                    // Timeout: abre a janela de combo por tempo mesmo sem o event.
+                    // Isso garante que o player pode encadear mesmo se o Animation Event
+                    // OnComboWindowOpen não estiver configurado no clipe.
+                    Debug.LogWarning($"[MeleeWeapon] TIMEOUT OnComboWindowOpen (step={comboStep} state={stateName}) " +
+                                     $"— abrindo combo window por fallback. Configure o Animation Event no clipe.");
+                    _animEventComboOpen = true; // força saída do while como se o event tivesse chegado
+                    break;
                 }
                 yield return null;
             }
@@ -678,8 +707,11 @@ public class MeleeWeapon : MonoBehaviour
                     }
                     else
                     {
-                        comboStep = 0;
-                        Debug.Log("[MeleeWeapon] FinisherWindow suprimida (finisherEnabled=false) — combo resetado.");
+                        // finisherEnabled=false: reseta o combo direto, sem abrir
+                        // nenhuma janela. O player pode atacar novamente imediatamente.
+                        finisherWindowOpen = false;
+                        comboStep          = 0;
+                        Debug.Log("[MeleeWeapon] FinisherWindow suprimida (finisherEnabled=false) — combo resetado limpo.");
                     }
                 }
             }

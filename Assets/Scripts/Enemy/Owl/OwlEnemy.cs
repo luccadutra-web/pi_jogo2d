@@ -2,33 +2,66 @@ using System.Collections;
 using UnityEngine;
 
 /// <summary>
-/// OwlEnemy — Coruja saltadora com ataque de bicada no ar.
+/// OwlEnemy — Coruja com bicada parada (light) e headbutt voador (heavy).
 ///
-/// ESTADOS:
-///   Patrol    → anda (animação de salto) até detectar o player
-///   Chase     → persegue o player no chão
-///   Telegraph → para e toca animação de preparação (janela de parry abre aqui)
-///   Leaping   → no ar com hitbox ativa; bica durante o voo
-///   Stagger   → tomou parry ou poise break
+/// ═══════════════════════════════════════════════════════════════════════════
+/// ESTADOS
+/// ═══════════════════════════════════════════════════════════════════════════
+///   Patrol       → anda até detectar o player (usa animação "run")
+///   Chase        → persegue no chão (usa animação "run")
+///   LightAttack  → para e bica (one-shot, player está em meleeRange)
+///   HeavyAttack  → salta / voa em direção ao player (player fora de meleeRange)
 ///   Dead
 ///
-/// SETUP:
+/// ═══════════════════════════════════════════════════════════════════════════
+/// ANIMATOR — parâmetros e states necessários
+/// ═══════════════════════════════════════════════════════════════════════════
+///
+///   Float  │ "Speed"          │ 0 = parado, >0 = andando/correndo
+///   ────────┼──────────────────┼─────────────────────────────────────────────
+///   Trigger │ "LightAttack"   │ dispara bicada parada (one-shot)
+///   Trigger │ "HeavyAttack"   │ dispara headbutt voador (one-shot)
+///   Trigger │ "Land"          │ dispara pouso após heavy (one-shot)
+///   Trigger │ "Hurt"          │ levar dano (one-shot)
+///   Trigger │ "Die"           │ morte (one-shot)
+///
+///   States base layer:
+///     run          (loop)    ← patrulha e perseguição
+///     light_attack (one-shot)← bicada
+///     heavy_attack (one-shot)← headbutt voador
+///     hurt         (one-shot)
+///     die          (one-shot)
+///
+/// ═══════════════════════════════════════════════════════════════════════════
+/// ANIMATION EVENTS
+/// ═══════════════════════════════════════════════════════════════════════════
+///
+///   Clip "light_attack":
+///     frame do bico descendo  → OnLightHitWindowOpen()
+///     frame do bico subindo   → OnLightHitWindowClose()
+///     último frame            → OnLightAttackEnd()
+///
+///   Clip "heavy_attack":
+///     frame que sai voando    → OnHeavyLaunch()       (aplica a velocidade)
+///     frame do bico / impacto → OnHeavyHitWindowOpen()
+///     frame após impacto      → OnHeavyHitWindowClose()
+///     (o pouso é detectado por IsGrounded; não precisa de event de fim)
+///
+///   Clip "hurt":
+///     (sem events obrigatórios)
+///
+///   Clip "die":
+///     (sem events obrigatórios)
+///
+/// ═══════════════════════════════════════════════════════════════════════════
+/// SETUP
+/// ═══════════════════════════════════════════════════════════════════════════
 ///   1. Adicione este script no GameObject da coruja.
-///   2. Configure os mesmos componentes do EnemyBehavior:
-///      - Rigidbody2D, CharacterAnimationController, EnemyPoise, PoiseBar
-///      - GroundCheck (Transform filho), AttackPoint (Transform filho)
-///   3. No Animator, crie os states/triggers:
-///      - "Walk"      (loop) — animação de salto no chão
-///      - "Chase"     (loop) — pode ser o mesmo que Walk
-///      - "Telegraph" (one-shot) — preparação pré-salto
-///      - "Leap"      (one-shot) — bicada no ar
-///      - "Land"      (one-shot) — pouso
-///      - "Stagger"   (one-shot)
-///      - "Die"       (one-shot)
+///   2. Componentes: Rigidbody2D, CharacterAnimationController, HitFlash.
+///   3. Filhos: GroundCheck (Transform), AttackPoint (Transform).
 ///   4. Arraste os campos no Inspector.
 /// </summary>
 [RequireComponent(typeof(Rigidbody2D))]
-[RequireComponent(typeof(EnemyPoise))]
 public class OwlEnemy : MonoBehaviour, IDamageable, IStaggerable
 {
     // ─── Stats ────────────────────────────────────────────────────────────────
@@ -37,106 +70,110 @@ public class OwlEnemy : MonoBehaviour, IDamageable, IStaggerable
     [SerializeField] private int maxHealth = 6;
 
     [Header("Movimento")]
-    [SerializeField] private float patrolSpeed = 2.0f;
-    [SerializeField] private float chaseSpeed  = 3.0f;
+    [SerializeField] private float patrolSpeed  = 2.0f;
+    [SerializeField] private float chaseSpeed   = 3.0f;
+    [SerializeField] private float patrolDistance = 3.0f;
+    [SerializeField] private float patrolWaitTime = 0.8f;
 
     [Header("Detecção")]
-    [SerializeField] private float detectionRange  = 6.0f;
-    [SerializeField] private float leapRange       = 4.5f;   // distância para decidir saltar
-    [SerializeField] private float leapMinRange    = 1.2f;   // muito perto: não salta, espera
+    [SerializeField] private float detectionRange = 7.0f;
     [SerializeField] private LayerMask playerLayer;
 
-    [Header("Salto / Bicada")]
-    [Tooltip("Força horizontal do salto em direção ao player.")]
-    [SerializeField] private float leapForceX      = 6.0f;
-    [Tooltip("Força vertical do salto.")]
-    [SerializeField] private float leapForceY      = 7.0f;
+    // ─── Light Attack (bicada parada) ─────────────────────────────────────────
+
+    [Header("Light Attack — Bicada parada")]
+    [Tooltip("Distância máxima para acionar a bicada parada.")]
+    [SerializeField] private float lightAttackRange  = 1.8f;
     [Tooltip("Dano da bicada.")]
-    [SerializeField] private int   leapDamage      = 2;
-    [Tooltip("Dano de postura da bicada — alto para incentivar parry.")]
-    [SerializeField] private float leapPoiseDamage = 35f;
-    [Tooltip("Raio do hitbox de bicada ao redor do AttackPoint.")]
-    [SerializeField] private float leapHitRadius   = 0.5f;
-    [Tooltip("Cooldown mínimo entre ataques.")]
-    [SerializeField] private float attackCooldown  = 2.2f;
+    [SerializeField] private int   lightAttackDamage = 1;
+    [Tooltip("Raio do hitbox ao redor do AttackPoint.")]
+    [SerializeField] private float lightHitRadius    = 0.45f;
+    [Tooltip("Cooldown após a bicada antes de poder atacar de novo.")]
+    [SerializeField] private float lightAttackCooldown = 1.6f;
 
-    [Header("Telegraph")]
-    [Tooltip("Duração da animação de preparação antes do salto.")]
-    [SerializeField] private float telegraphDuration = 0.55f;
-    [Tooltip("Se o player estiver a menos que este valor durante o telegraph, cancela o salto.")]
-    [SerializeField] private float telegraphCancelRange = 0.8f;
+    // ─── Heavy Attack (headbutt voador) ──────────────────────────────────────
 
-    [Header("Parry")]
-    [Tooltip("Durante estes segundos após o início do Telegraph o player pode aplicar parry.")]
-    [SerializeField] private float parryWindowDuration = 0.5f;
-    [SerializeField] private float parryStaggerDuration     = 1.0f;
-    [SerializeField] private float poiseBreakStaggerDuration = 2.0f;
-
-    [Header("Stagger")]
-    [SerializeField] private float staggerDuration = 0.8f;
+    [Header("Heavy Attack — Superman headbutt")]
+    [Tooltip("Distância máxima para acionar o headbutt.")]
+    [SerializeField] private float heavyAttackRange  = 5.5f;
+    [Tooltip("Distância mínima — abaixo disso usa light attack em vez de heavy.")]
+    [SerializeField] private float heavyMinRange     = 1.8f;
+    [Tooltip("Velocidade horizontal do voo.")]
+    [SerializeField] private float heavyForceX       = 7.0f;
+    [Tooltip("Impulso vertical no lançamento.")]
+    [SerializeField] private float heavyForceY       = 5.5f;
+    [Tooltip("Dano do headbutt.")]
+    [SerializeField] private int   heavyAttackDamage = 2;
+    [Tooltip("Raio do hitbox do headbutt.")]
+    [SerializeField] private float heavyHitRadius    = 0.6f;
+    [Tooltip("Cooldown após o headbutt antes de poder atacar de novo.")]
+    [SerializeField] private float heavyAttackCooldown = 2.5f;
 
     [Header("Sprite")]
-    [Tooltip("Marque se o sprite padrão está virado para a esquerda (invertido).")]
+    [Tooltip("Marque se o sprite padrão está virado para a esquerda.")]
     [SerializeField] private bool spriteFlippedByDefault = true;
-    [SerializeField] private float patrolDistance  = 3.0f;   // quanto anda antes de virar
-    [SerializeField] private float patrolWaitTime  = 0.8f;   // pausa ao virar
 
     [Header("Referências")]
-    [SerializeField] private Transform  groundCheck;
-    [SerializeField] private Transform  attackPoint;
-    [SerializeField] private LayerMask  groundLayer;
-    [SerializeField] private LayerMask  hitLayer;
+    [SerializeField] private Transform groundCheck;
+    [SerializeField] private Transform attackPoint;
+    [SerializeField] private LayerMask groundLayer;
+    [SerializeField] private LayerMask hitLayer;
 
     [Header("Debug")]
     [SerializeField] private bool debugLog = true;
 
     // ─── Triggers de animação ─────────────────────────────────────────────────
-    // Por enquanto só existe Walk/Run — controlado por SetSpeed.
-    // Quando novas animações forem adicionadas, descomente os triggers abaixo.
-    private const string AnimStagger = "Stagger";
-    private const string AnimDie     = "Die";
-    // private const string AnimTelegraph = "Telegraph";
-    // private const string AnimLeap      = "Leap";
-    // private const string AnimLand      = "Land";
+
+    private const string AnimHurt        = "IsHurt"; // Bool no Animator (não trigger)
+    private const string AnimDie         = "Die";
+    private const string AnimLightAttack = "LightAttack";
+    private const string AnimHeavyAttack = "HeavyAttack";
+    private const string AnimLand        = "Land";
 
     // ─── Estado ───────────────────────────────────────────────────────────────
 
-    private enum State { Patrol, Chase, Telegraph, Leaping, Stagger, Dead }
+    private enum State { Patrol, Chase, LightAttack, HeavyAttack, Hurt, Dead }
 
-    private State  _state        = State.Patrol;
-    private int    _currentHealth;
-    private bool   _isStaggered;
-    private bool   _attackOnCooldown;
-    private bool   _hitAppliedThisLeap;
-    private bool   _parryWindowOpen;
-    private bool   _hitWindowOpen;       // true quando animation event abre a janela de hit
+    private State _state          = State.Patrol;
+    private int   _currentHealth;
+    private bool  _attackOnCooldown;
+
+    // light attack
+    private bool  _lightHitWindowOpen;
+    private bool  _lightHitApplied;
+    private bool  _lightAttackRunning;
+
+    // heavy attack
+    private bool  _heavyLaunched;
+    private bool  _heavyHitWindowOpen;
+    private bool  _heavyHitApplied;
 
     // patrulha
-    private int    _patrolDir     = 1;
-    private float  _patrolWalked  = 0f;
-    private bool   _patrolWaiting = false;
+    private int   _patrolDir    = 1;
+    private float _patrolWalked = 0f;
+    private bool  _patrolWaiting;
+
+    // hurt
+    private bool      _isPlayingHurt;  // evita re-disparar o trigger Hurt durante o combo
+    private Coroutine _hurtCoroutine;
+    private State     _stateBeforeHurt;
 
     // ─── Componentes ──────────────────────────────────────────────────────────
 
     private Rigidbody2D                  _rb;
     private CharacterAnimationController _anim;
-    private EnemyPoise                   _poise;
     private HitFlash                     _hitFlash;
     private Transform                    _playerTransform;
 
-    // ─── Unity ───────────────────────────────────────────────────────────────
+    // ─── Unity ────────────────────────────────────────────────────────────────
 
     void Awake()
     {
         _rb       = GetComponent<Rigidbody2D>();
         _anim     = GetComponent<CharacterAnimationController>();
-        _poise    = GetComponent<EnemyPoise>() ?? GetComponentInChildren<EnemyPoise>();
-        _hitFlash = GetComponent<HitFlash>()   ?? GetComponentInChildren<HitFlash>();
+        _hitFlash = GetComponent<HitFlash>() ?? GetComponentInChildren<HitFlash>();
 
         _currentHealth = maxHealth;
-
-        if (_poise != null)
-            _poise.OnPoiseBreak += OnPoiseBreak;
     }
 
     void Start()
@@ -146,28 +183,24 @@ public class OwlEnemy : MonoBehaviour, IDamageable, IStaggerable
         else Debug.LogWarning("[OwlEnemy] Player não encontrado — adicione a tag 'Player'.");
     }
 
-    void OnDestroy()
-    {
-        if (_poise != null) _poise.OnPoiseBreak -= OnPoiseBreak;
-    }
-
     void Update()
     {
-        if (_state == State.Dead || _state == State.Stagger) return;
-        if (_isStaggered) return;
+        if (_state == State.Dead || _state == State.Hurt) return;
 
         switch (_state)
         {
-            case State.Patrol:    DoPatrol();    break;
-            case State.Chase:     DoChase();     break;
-            case State.Leaping:   DoLeaping();   break;
-            // Telegraph e Land são gerenciados por coroutines
+            case State.Patrol:      DoPatrol();      break;
+            case State.Chase:       DoChase();       break;
+            case State.LightAttack: DoLightAttack(); break;
+            case State.HeavyAttack: DoHeavyAttack(); break;
         }
 
         UpdateFacing();
     }
 
-    // ─── Estados ─────────────────────────────────────────────────────────────
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ESTADOS
+    // ═══════════════════════════════════════════════════════════════════════════
 
     private void DoPatrol()
     {
@@ -181,7 +214,7 @@ public class OwlEnemy : MonoBehaviour, IDamageable, IStaggerable
         }
 
         _rb.linearVelocity = new Vector2(_patrolDir * patrolSpeed, _rb.linearVelocity.y);
-        _patrolWalked += patrolSpeed * Time.deltaTime;
+        _patrolWalked     += patrolSpeed * Time.deltaTime;
         _anim?.SetSpeed(patrolSpeed);
 
         if (_patrolWalked >= patrolDistance)
@@ -201,43 +234,59 @@ public class OwlEnemy : MonoBehaviour, IDamageable, IStaggerable
         if (dist > detectionRange * 1.4f)
         {
             Log("Perdeu player → PATROL");
+            _anim?.SetSpeed(0f);
+            _rb.linearVelocity = new Vector2(0f, _rb.linearVelocity.y);
             _state = State.Patrol;
             return;
         }
 
-        // Decide saltar
-        if (!_attackOnCooldown && dist <= leapRange && dist >= leapMinRange && IsGrounded())
+        if (!_attackOnCooldown && IsGrounded())
         {
-            Log("Em range → TELEGRAPH");
-            _state = State.Telegraph;
-            _rb.linearVelocity = new Vector2(0f, _rb.linearVelocity.y);
-            _anim?.SetSpeed(0f);
-            StartCoroutine(TelegraphRoutine());
-            return;
+            // ── Light Attack: player dentro do range corpo-a-corpo ─────────────
+            if (dist <= lightAttackRange)
+            {
+                Log("Player perto → LIGHT ATTACK");
+                _rb.linearVelocity = new Vector2(0f, _rb.linearVelocity.y);
+                _anim?.StopImmediate();   // sem damping — trigger precisa do Speed = 0 já
+                _state = State.LightAttack;
+                StartCoroutine(LightAttackRoutine());
+                return;
+            }
+
+            // ── Heavy Attack: player em range médio ───────────────────────────
+            if (dist >= heavyMinRange && dist <= heavyAttackRange)
+            {
+                Log("Player em range médio → HEAVY ATTACK");
+                _rb.linearVelocity = new Vector2(0f, _rb.linearVelocity.y);
+                _anim?.StopImmediate();   // sem damping
+                _state = State.HeavyAttack;
+                StartCoroutine(HeavyAttackRoutine());
+                return;
+            }
         }
 
-        // Muito perto: para e espera o player se afastar (evita empurrar e saltar em cima)
-        if (dist < leapMinRange)
-        {
-            _rb.linearVelocity = new Vector2(0f, _rb.linearVelocity.y);
-            _anim?.SetSpeed(0f);
-            return;
-        }
-
-        // Persegue no chão
+        // ── Persegue no chão ──────────────────────────────────────────────────
         float dir = _playerTransform.position.x > transform.position.x ? 1f : -1f;
 
-        // Verifica se há algo bloqueando horizontalmente (paredes ou player)
-        // antes de aplicar velocidade — evita empurrar o player que está colado.
-        // Usa um raycast curto na direção do movimento.
+        // Para se estiver encostado no player (evita empurrar)
         bool blocked = Physics2D.Raycast(
-            transform.position, Vector2.right * dir, leapMinRange * 0.9f, playerLayer | groundLayer
+            transform.position, Vector2.right * dir, lightAttackRange * 0.85f,
+            playerLayer | groundLayer
         );
 
         if (blocked)
         {
             _rb.linearVelocity = new Vector2(0f, _rb.linearVelocity.y);
-            _anim?.SetSpeed(0f);
+            _anim?.StopImmediate();
+            return;
+        }
+
+        // Em cooldown E dentro do range de ataque: para e espera sem animar.
+        // Evita o loop do run (pulo de sapo) enquanto aguarda o cooldown.
+        if (_attackOnCooldown && dist <= lightAttackRange)
+        {
+            _rb.linearVelocity = new Vector2(0f, _rb.linearVelocity.y);
+            _anim?.StopImmediate();
             return;
         }
 
@@ -245,48 +294,52 @@ public class OwlEnemy : MonoBehaviour, IDamageable, IStaggerable
         _anim?.SetSpeed(chaseSpeed);
     }
 
-    private void DoLeaping()
+    // ── Light Attack: bicada parada ───────────────────────────────────────────
+
+    private void DoLightAttack()
     {
-        if (_hitAppliedThisLeap || !_hitWindowOpen) return;
+        // Checagem de hitbox feita por Animation Event (OnLightHitWindowOpen/Close).
+        // Aqui apenas aplicamos o dano enquanto a janela estiver aberta.
+        if (!_lightHitWindowOpen || _lightHitApplied) return;
 
         Vector2 origin = GetAttackPointPosition();
-        var hits = Physics2D.OverlapCircleAll(origin, leapHitRadius, hitLayer);
+        var hits = Physics2D.OverlapCircleAll(origin, lightHitRadius, hitLayer);
         foreach (var col in hits)
         {
             var ph = col.GetComponent<PlayerHealth>() ?? col.GetComponentInParent<PlayerHealth>();
             if (ph == null) continue;
 
-            // Poise hit só é aplicado se o dano não foi absorvido por parry/block/iFrame
-            bool absorbed = ph.TakeDamage(leapDamage, transform.position);
-            if (!absorbed)
-            {
-                var pp = col.GetComponent<PlayerPoise>() ?? col.GetComponentInParent<PlayerPoise>();
-                pp?.ReceivePoiseHit(leapPoiseDamage);
-            }
-
-            _hitAppliedThisLeap = true;
-            Log($"Bicada HIT | dmg={leapDamage}");
+            ph.TakeDamage(lightAttackDamage, transform.position);
+            _lightHitApplied = true;
+            Log($"Light Attack HIT | dmg={lightAttackDamage}");
             break;
         }
     }
 
-    /// <summary>
-    /// Retorna a posição do AttackPoint respeitando o flip de scale.
-    /// Se o Transform filho estiver atribuído, usa a posição dele diretamente
-    /// (o Unity já espelha filhos junto com o localScale do pai).
-    /// Se não estiver, calcula o offset manualmente a partir do facing.
-    /// </summary>
-    private Vector2 GetAttackPointPosition()
-    {
-        if (attackPoint != null) return attackPoint.position;
+    // ── Heavy Attack: superman headbutt ──────────────────────────────────────
 
-        // Fallback: recalcula offset manual quando o Transform não está atribuído
-        float facing = transform.localScale.x >= 0f ? 1f : -1f;
-        if (spriteFlippedByDefault) facing *= -1f;   // corrige se sprite padrão está invertido
-        return (Vector2)transform.position + Vector2.right * facing * leapHitRadius;
+    private void DoHeavyAttack()
+    {
+        // Hitbox ativa enquanto _heavyHitWindowOpen = true (controlado por Animation Events).
+        if (!_heavyHitWindowOpen || _heavyHitApplied) return;
+
+        Vector2 origin = GetAttackPointPosition();
+        var hits = Physics2D.OverlapCircleAll(origin, heavyHitRadius, hitLayer);
+        foreach (var col in hits)
+        {
+            var ph = col.GetComponent<PlayerHealth>() ?? col.GetComponentInParent<PlayerHealth>();
+            if (ph == null) continue;
+
+            ph.TakeDamage(heavyAttackDamage, transform.position);
+            _heavyHitApplied = true;
+            Log($"Heavy Attack HIT | dmg={heavyAttackDamage}");
+            break;
+        }
     }
 
-    // ─── Coroutines de estado ─────────────────────────────────────────────────
+    // ═══════════════════════════════════════════════════════════════════════════
+    // COROUTINES
+    // ═══════════════════════════════════════════════════════════════════════════
 
     private IEnumerator PatrolTurnRoutine()
     {
@@ -294,125 +347,175 @@ public class OwlEnemy : MonoBehaviour, IDamageable, IStaggerable
         _rb.linearVelocity = new Vector2(0f, _rb.linearVelocity.y);
         _anim?.SetSpeed(0f);
         yield return new WaitForSeconds(patrolWaitTime);
-        _patrolDir *= -1;
+        _patrolDir    *= -1;
         _patrolWaiting = false;
     }
 
-    private IEnumerator TelegraphRoutine()
+    private IEnumerator LightAttackRoutine()
     {
-        // Quando tiver animação: _anim?.TriggerAnimation("Telegraph");
-        // Por enquanto: para no lugar, velocidade zero já comunica a pausa
+        _lightHitApplied    = false;
+        _lightHitWindowOpen = false;
+        _lightAttackRunning = true;
 
-        // Abre janela de parry
-        _parryWindowOpen = true;
-        yield return new WaitForSeconds(parryWindowDuration);
-        _parryWindowOpen = false;
+        _anim?.TriggerAnimation(AnimLightAttack);
 
-        // Aguarda o resto do telegraph
-        float remaining = telegraphDuration - parryWindowDuration;
-        if (remaining > 0f) yield return new WaitForSeconds(remaining);
-
-        // Cancela se player sumiu ou está muito perto
-        if (_state != State.Telegraph) yield break;
-        // Usa leapMinRange para manter consistência com DoChase (telegraphCancelRange era menor)
-        if (_playerTransform == null || PlayerDistance() < leapMinRange)
+        // Fallback de fim de animação: caso OnLightAttackEnd não seja configurado,
+        // aguarda um tempo generoso e retorna ao Chase.
+        // Se o Animation Event estiver presente, OnLightAttackEnd() encerrará antes.
+        float timeout = 1.8f;
+        float elapsed = 0f;
+        while (_lightAttackRunning && elapsed < timeout)
         {
-            Log("Telegraph cancelado — player muito perto ou sumiu");
-            _state = State.Chase;
-            yield break;
+            elapsed += Time.deltaTime;
+            yield return null;
         }
 
-        StartCoroutine(LeapRoutine());
+        // Garante que fechou a janela
+        _lightHitWindowOpen = false;
+        _lightAttackRunning = false;
+
+        _state = State.Chase;
+        Log("LightAttack fim → cooldown");
+        StartCoroutine(AttackCooldownRoutine(lightAttackCooldown));
     }
 
-    private IEnumerator LeapRoutine()
+    private IEnumerator HeavyAttackRoutine()
     {
-        _state              = State.Leaping;
-        _hitAppliedThisLeap = false;
+        _heavyLaunched      = false;
+        _heavyHitApplied    = false;
+        _heavyHitWindowOpen = false;
+
+        _anim?.TriggerAnimation(AnimHeavyAttack);
+
+        // Fallback de lançamento: caso OnHeavyLaunch não seja configurado,
+        // aplica velocidade após curto delay.
+        StartCoroutine(HeavyLaunchFallback());
+
+        // Aguarda pousar
+        yield return new WaitForSeconds(0.25f);   // margem para sair do chão
+        yield return new WaitUntil(() => IsGrounded() || _state == State.Dead);
+
+        if (_state == State.Dead) yield break;
+
+        // Pouso
+        _heavyHitWindowOpen = false;
+        _rb.linearVelocity  = new Vector2(0f, _rb.linearVelocity.y);
+        _anim?.TriggerAnimation(AnimLand);
+
+        // Aguarda animação de land (curta)
+        yield return new WaitForSeconds(0.35f);
+
+        _state = State.Chase;
+        Log("HeavyAttack pousou → cooldown");
+        StartCoroutine(AttackCooldownRoutine(heavyAttackCooldown));
+    }
+
+    /// <summary>
+    /// Fallback: aplica o impulso do heavy se OnHeavyLaunch não vier do Animation Event.
+    /// </summary>
+    private IEnumerator HeavyLaunchFallback()
+    {
+        yield return new WaitForSeconds(0.2f);
+        if (!_heavyLaunched) DoHeavyLaunch();
+    }
+
+    private void DoHeavyLaunch()
+    {
+        if (_heavyLaunched) return;
+        _heavyLaunched = true;
 
         float dir = _playerTransform != null
             ? (_playerTransform.position.x > transform.position.x ? 1f : -1f)
             : _patrolDir;
 
-        _rb.linearVelocity = new Vector2(dir * leapForceX, leapForceY);
-        _anim?.TriggerAnimation("Leap");   // necessário para os Animation Events dispararem
-        _anim?.SetSpeed(leapForceX);
-
-        // Fallback: se os Animation Events não estiverem presentes no clipe,
-        // abre a hit window por tempo. Se OnHitWindowOpen já foi chamado pelo event,
-        // este bloco apenas confirma o flag sem efeito colateral.
-        StartCoroutine(HitWindowFallbackRoutine());
-
-        // Aguarda pousar — monitora distância durante o voo para não empurrar o player.
-        // Como a colisão física entre player e inimigo está ignorada, o Owl atravessaria
-        // o player e o empurraria indefinidamente sem esta verificação.
-        yield return new WaitForSeconds(0.2f);
-        yield return new WaitUntil(() =>
-        {
-            // Para o impulso horizontal ao chegar perto do player no ar
-            if (_playerTransform != null && PlayerDistance() < leapMinRange)
-                _rb.linearVelocity = new Vector2(0f, _rb.linearVelocity.y);
-
-            return IsGrounded() || _state == State.Stagger || _state == State.Dead;
-        });
-
-        if (_state == State.Stagger || _state == State.Dead) yield break;
-
-        _hitWindowOpen     = false;   // garante fechamento mesmo sem Anim Event de close
-        _rb.linearVelocity = new Vector2(0f, _rb.linearVelocity.y);
-        _anim?.TriggerAnimation("Land");
-        _state = State.Chase;
-
-        Log("Pousou → cooldown");
-        StartCoroutine(AttackCooldownRoutine());
+        _rb.linearVelocity = new Vector2(dir * heavyForceX, heavyForceY);
+        _anim?.SetSpeed(heavyForceX);
+        Log("Heavy lançado");
     }
 
-    /// <summary>
-    /// Abre a hit window automaticamente caso o Animation Event "OnHitWindowOpen"
-    /// não esteja configurado no clipe de Leap. Sem efeito colateral se o event já existir.
-    /// </summary>
-    private IEnumerator HitWindowFallbackRoutine()
-    {
-        yield return new WaitForSeconds(0.15f);  // espera pico aproximado do salto
-        if (!_hitWindowOpen)
-        {
-            _hitWindowOpen = true;
-            Log("HitWindow aberta via fallback por tempo (Anim Event não encontrado)");
-        }
-    }
-
-    private IEnumerator AttackCooldownRoutine()
+    private IEnumerator AttackCooldownRoutine(float duration)
     {
         _attackOnCooldown = true;
-        yield return new WaitForSeconds(attackCooldown);
+        yield return new WaitForSeconds(duration);
         _attackOnCooldown = false;
     }
 
-    private IEnumerator StaggerRoutine(float duration)
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ANIMATION EVENTS — chame estes métodos diretamente nos clipes
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    // ── light_attack ──────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Animation Event — "light_attack"
+    /// Adicione no frame que o bico começa a descer (início do hitbox ativo).
+    /// </summary>
+    public void OnLightHitWindowOpen()
     {
-        _isStaggered = true;
-        _state       = State.Stagger;
-        _anim?.SetSpeed(0f);
-
-        // Para o movimento horizontal sem tocar no Y — zerar velocity completo
-        // pode causar overlap com o chão no próximo FixedUpdate e o inimigo cair.
-        _rb.linearVelocity = new Vector2(0f, _rb.linearVelocity.y);
-        // Congela X e rotação durante o stagger para evitar drift de física
-        _rb.constraints = RigidbodyConstraints2D.FreezePositionX | RigidbodyConstraints2D.FreezeRotation;
-
-        yield return new WaitForSeconds(duration);
-
-        // Restaura constraints antes de voltar ao jogo
-        _rb.constraints = RigidbodyConstraints2D.FreezeRotation;
-
-        if (_state == State.Dead) yield break;
-
-        _isStaggered = false;
-        _state       = State.Chase;
-        Log($"Recuperou do stagger ({duration:F1}s)");
+        _lightHitWindowOpen = true;
+        _lightHitApplied    = false;
+        Log("Light hit window ABERTA");
     }
 
-    // ─── IDamageable ──────────────────────────────────────────────────────────
+    /// <summary>
+    /// Animation Event — "light_attack"
+    /// Adicione no frame que o bico começa a subir (fim do hitbox).
+    /// </summary>
+    public void OnLightHitWindowClose()
+    {
+        _lightHitWindowOpen = false;
+        Log("Light hit window FECHADA");
+    }
+
+    /// <summary>
+    /// Animation Event — "light_attack"
+    /// Adicione no último frame do clipe (ou 1–2 frames antes do fim).
+    /// Sinaliza que a animação acabou e libera o estado.
+    /// </summary>
+    public void OnLightAttackEnd()
+    {
+        _lightHitWindowOpen = false;
+        _lightAttackRunning = false;
+        Log("OnLightAttackEnd recebido");
+    }
+
+    // ── heavy_attack ──────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Animation Event — "heavy_attack"
+    /// Adicione no frame que a coruja se lança (começa a voar para frente).
+    /// Este event aplica a velocidade do Rigidbody.
+    /// </summary>
+    public void OnHeavyLaunch()
+    {
+        DoHeavyLaunch();
+        Log("OnHeavyLaunch (Animation Event)");
+    }
+
+    /// <summary>
+    /// Animation Event — "heavy_attack"
+    /// Adicione no frame do bico / momento de impacto (hitbox ativo).
+    /// </summary>
+    public void OnHeavyHitWindowOpen()
+    {
+        _heavyHitWindowOpen = true;
+        _heavyHitApplied    = false;
+        Log("Heavy hit window ABERTA");
+    }
+
+    /// <summary>
+    /// Animation Event — "heavy_attack"
+    /// Adicione 1–2 frames após o impacto (fecha hitbox).
+    /// </summary>
+    public void OnHeavyHitWindowClose()
+    {
+        _heavyHitWindowOpen = false;
+        Log("Heavy hit window FECHADA");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // IDamageable
+    // ═══════════════════════════════════════════════════════════════════════════
 
     public void TakeDamage(int damage, Vector2 sourcePosition)
     {
@@ -423,78 +526,59 @@ public class OwlEnemy : MonoBehaviour, IDamageable, IStaggerable
 
         _hitFlash?.Flash();
         VfxManager.Instance?.SpawnEnemyHurt(transform.position);
-        _poise?.ReceivePoiseHit(damage * 5f);
 
         if (_currentHealth <= 0) { Die(); return; }
-        // Quando tiver animação de Hit: _anim?.TriggerAnimation("Hit");
+
+        // Salva o estado atual para restaurar depois, para o movimento e entra em Hurt.
+        if (_state != State.Hurt)
+            _stateBeforeHurt = _state;
+
+        _state = State.Hurt;
+        _rb.linearVelocity = new Vector2(0f, _rb.linearVelocity.y);
+        _anim?.StopImmediate();
+
+        // Liga o bool IsHurt — o Animator entra em hurt e fica lá enquanto true.
+        // Hits subsequentes do combo apenas renovam o timer sem reiniciar a animação.
+        _anim?.SetBool(AnimHurt, true);
+
+        if (_hurtCoroutine != null) StopCoroutine(_hurtCoroutine);
+        _hurtCoroutine = StartCoroutine(HurtRoutine());
     }
 
     public void TakeDamage(int damage) => TakeDamage(damage, default);
 
-    // ─── IStaggerable (parry) ─────────────────────────────────────────────────
+    // ═══════════════════════════════════════════════════════════════════════════
+    // IStaggerable — sem stagger neste inimigo; apenas absorve o dano
+    // ═══════════════════════════════════════════════════════════════════════════
 
     public void Stagger()
     {
+        // A coruja não possui animação de stagger nem telegraph,
+        // portanto um parry fora de contexto só causa flash visual.
         if (_state == State.Dead) return;
-
-        if (!_parryWindowOpen)
-        {
-            Log("Parry fora da janela — ignorado");
-            _hitFlash?.ParryFlash();
-            return;
-        }
-
-        Log("PARRY CONFIRMADO → stagger");
-        _parryWindowOpen = false;
-        StopAllCoroutines();
-
-        // Preserva gravidade, cancela impulso horizontal para não atravessar o chão
-        _rb.gravityScale    = 1f;
-        _rb.linearVelocity  = new Vector2(0f, _rb.linearVelocity.y);
-        _rb.constraints     = RigidbodyConstraints2D.FreezePositionX | RigidbodyConstraints2D.FreezeRotation;
-        _hitWindowOpen      = false;
-        _hitAppliedThisLeap = true;
-
+        Log("Stagger chamado (sem efeito — sem anim de stagger)");
         _hitFlash?.ParryFlash();
-        _anim?.ForceState(AnimStagger);
-        StartCoroutine(StaggerRoutine(parryStaggerDuration));
-        StartCoroutine(AttackCooldownRoutine());
     }
 
-    // ─── Poise break ─────────────────────────────────────────────────────────
+    // ═══════════════════════════════════════════════════════════════════════════
+    // MORTE
+    // ═══════════════════════════════════════════════════════════════════════════
 
-    private void OnPoiseBreak()
+    private IEnumerator HurtRoutine()
     {
-        if (_state == State.Dead) return;
-
-        Log("POISE QUEBRADA → stagger longo");
-        StopAllCoroutines();
-
-        // Garante que o inimigo não fique no ar ou atravesse o chão
-        // Preserva velocidade Y para a gravidade continuar atuando normalmente
-        _rb.gravityScale    = 1f;
-        _rb.linearVelocity  = new Vector2(0f, _rb.linearVelocity.y);
-        _rb.constraints     = RigidbodyConstraints2D.FreezePositionX | RigidbodyConstraints2D.FreezeRotation;
-        _hitWindowOpen      = false;
-        _hitAppliedThisLeap = true; // evita que hit residual seja aplicado no stagger
-
-        _hitFlash?.PoiseBreakFlash();
-        VfxManager.Instance?.SpawnPoiseBreak(transform.position);
-        _anim?.ForceState(AnimStagger);
-        StartCoroutine(StaggerRoutine(poiseBreakStaggerDuration));
+        _isPlayingHurt = true;
+        yield return new WaitForSecondsRealtime(0.25f);
+        _isPlayingHurt = false;
+        _anim?.SetBool(AnimHurt, false); // Animator sai de hurt → idle
+        if (_state != State.Dead)
+            _state = _stateBeforeHurt;   // retoma o que estava fazendo antes
     }
-
-    // ─── Morte ────────────────────────────────────────────────────────────────
 
     private void Die()
     {
         _state = State.Dead;
         StopAllCoroutines();
 
-        // Congela o Rigidbody completamente: sem velocidade, sem gravidade,
-        // sem movimento — o inimigo fica parado no lugar durante a animação de morte.
-        // NÃO desativamos o Collider aqui pois isso faria o corpo cair pelo chão
-        // enquanto a animação de Die ainda não está configurada no Animator.
         _rb.linearVelocity = Vector2.zero;
         _rb.gravityScale   = 0f;
         _rb.constraints    = RigidbodyConstraints2D.FreezeAll;
@@ -503,9 +587,6 @@ public class OwlEnemy : MonoBehaviour, IDamageable, IStaggerable
         _anim?.TriggerAnimation(AnimDie);
         Log("Morreu.");
 
-        // Desativa o collider e destrói apenas após a animação ter tempo de rodar.
-        // Quando a animação de Die estiver configurada, substitua o tempo pelo
-        // comprimento real do clipe. Por ora 2.5s é margem suficiente.
         StartCoroutine(DeathCleanupRoutine(2.5f));
     }
 
@@ -517,55 +598,9 @@ public class OwlEnemy : MonoBehaviour, IDamageable, IStaggerable
         Destroy(gameObject);
     }
 
-    // ─── Animation Events ─────────────────────────────────────────────────────
-    // Chame estes métodos via Animation Events no clipe de run/ataque
-    // quando tiver as animações de telegraph e leap prontas.
-    //
-    // Por enquanto o telegraph e leap são controlados por tempo (telegraphDuration).
-    // Quando tiver os clipes, substitua o WaitForSeconds por estas janelas.
-
-    /// <summary>
-    /// Animation Event — abre a janela de parry (início do telegraph).
-    /// Adicione no frame onde o inimigo começa a preparar o salto.
-    /// </summary>
-    public void OnParryWindowOpen()
-    {
-        _parryWindowOpen = true;
-        Log("Janela de parry ABERTA");
-    }
-
-    /// <summary>
-    /// Animation Event — fecha a janela de parry.
-    /// Adicione no frame onde o inimigo sai do telegraph e vai saltar.
-    /// </summary>
-    public void OnParryWindowClose()
-    {
-        _parryWindowOpen = false;
-        Log("Janela de parry FECHADA");
-    }
-
-    /// <summary>
-    /// Animation Event — abre a hitbox da bicada durante o voo.
-    /// Adicione no frame do pico do salto / bico descendo.
-    /// </summary>
-    public void OnHitWindowOpen()
-    {
-        _hitWindowOpen = true;
-        Log("Janela de hit ABERTA");
-    }
-
-    /// <summary>
-    /// Animation Event — fecha a hitbox da bicada.
-    /// Adicione no frame do pouso.
-    /// </summary>
-    public void OnHitWindowClose()
-    {
-        _hitWindowOpen      = false;
-        _hitAppliedThisLeap = false;
-        Log("Janela de hit FECHADA");
-    }
-
-    // ─── Helpers ─────────────────────────────────────────────────────────────
+    // ═══════════════════════════════════════════════════════════════════════════
+    // HELPERS
+    // ═══════════════════════════════════════════════════════════════════════════
 
     private bool IsGrounded()
     {
@@ -581,27 +616,29 @@ public class OwlEnemy : MonoBehaviour, IDamageable, IStaggerable
             ? Vector2.Distance(transform.position, _playerTransform.position)
             : float.MaxValue;
 
+    private Vector2 GetAttackPointPosition()
+    {
+        if (attackPoint != null) return attackPoint.position;
+        float facing = transform.localScale.x >= 0f ? 1f : -1f;
+        if (spriteFlippedByDefault) facing *= -1f;
+        return (Vector2)transform.position + Vector2.right * facing * lightHitRadius;
+    }
+
     private void UpdateFacing()
     {
-        if (_playerTransform == null) return;
-
         float velX = _rb.linearVelocity.x;
         float absS = Mathf.Abs(transform.localScale.x);
 
-        // Se o sprite padrão aponta para a esquerda, inverte a lógica
         bool facingRight;
         if (Mathf.Abs(velX) > 0.1f)
             facingRight = velX > 0;
-        else if (_state == State.Chase || _state == State.Telegraph)
+        else if (_playerTransform != null &&
+                 (_state == State.Chase || _state == State.LightAttack || _state == State.HeavyAttack))
             facingRight = _playerTransform.position.x > transform.position.x;
         else
             return;
 
-        // spriteFlippedByDefault = true  → sprite padrão aponta esquerda
-        //   facingRight → precisa inverter (scale negativo)
-        //   facingLeft  → scale positivo
         bool flip = spriteFlippedByDefault ? facingRight : !facingRight;
-
         Vector3 s = transform.localScale;
         s.x = flip ? -absS : absS;
         transform.localScale = s;
@@ -609,27 +646,24 @@ public class OwlEnemy : MonoBehaviour, IDamageable, IStaggerable
 
     private void Log(string msg) { if (debugLog) Debug.Log($"[OwlEnemy {name}] {msg}"); }
 
-    // ─── Gizmos ───────────────────────────────────────────────────────────────
+    // ═══════════════════════════════════════════════════════════════════════════
+    // GIZMOS
+    // ═══════════════════════════════════════════════════════════════════════════
 
     void OnDrawGizmosSelected()
     {
-        // Detecção
         Gizmos.color = Color.yellow;
         Gizmos.DrawWireSphere(transform.position, detectionRange);
 
-        // Range de salto
+        Gizmos.color = Color.cyan;
+        Gizmos.DrawWireSphere(transform.position, lightAttackRange);
+
         Gizmos.color = Color.red;
-        Gizmos.DrawWireSphere(transform.position, leapRange);
+        Gizmos.DrawWireSphere(transform.position, heavyAttackRange);
 
-        // Range mínimo (não salta se player estiver aqui dentro)
-        Gizmos.color = Color.blue;
-        Gizmos.DrawWireSphere(transform.position, leapMinRange);
+        Gizmos.color = new Color(1f, 0.4f, 0f, 0.5f);
+        Gizmos.DrawWireSphere(GetAttackPointPosition(), lightHitRadius);
 
-        // Hitbox de bicada — usa GetAttackPointPosition para refletir o facing correto
-        Gizmos.color = new Color(1f, 0.3f, 0f, 0.5f);
-        Gizmos.DrawWireSphere(GetAttackPointPosition(), leapHitRadius);
-
-        // Ground check
         if (groundCheck != null)
         {
             Gizmos.color = Color.green;
